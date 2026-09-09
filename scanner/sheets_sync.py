@@ -70,7 +70,7 @@ def get_season_level_rows(sheet_name: str) -> pd.DataFrame:
 
 def _post(payload: dict) -> bool:
     try:
-        resp = requests.post(config.APPS_SCRIPT_URL, json=payload, timeout=60)
+        resp = requests.post(config.APPS_SCRIPT_URL, json=payload, timeout=150)
         resp.raise_for_status()
         body = resp.json()
         if not body.get("ok", False):

@@ -111,6 +111,7 @@ function _upsertRows(sheetName, rows) {
 
   let header;
   let existingIndex = {}; // key -> 1-based sheet row number
+  const keyFields = _keyFieldsFor(sheetName);
 
   if (lastRow === 0) {
     // Brand new sheet: header comes from the union-preserving order of the first row.
@@ -119,16 +120,22 @@ function _upsertRows(sheetName, rows) {
   } else {
     header = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
     if (lastRow > 1) {
-      const existingData = sheet.getRange(2, 1, lastRow - 1, lastCol).getValues();
-      const keyCols = KEY_FIELDS.map(function (f) { return header.indexOf(f); });
-      for (let i = 0; i < existingData.length; i++) {
-        const key = keyCols.map(function (c) { return existingData[i][c]; }).join("|");
+      // Only read the key columns, not the full row width -- reading all ~90
+      // columns for every existing row on every chunk push is what made this
+      // scale quadratically with total rows-pushed-this-run and eventually blew
+      // past the client's request timeout on large sheets.
+      const keyColIdx = keyFields.map(function (f) { return header.indexOf(f); });
+      const keyColumns = keyColIdx.map(function (c) {
+        return sheet.getRange(2, c + 1, lastRow - 1, 1).getValues();
+      });
+      for (let i = 0; i < lastRow - 1; i++) {
+        const key = keyColumns.map(function (col) { return col[i][0]; }).join("|");
         existingIndex[key] = i + 2; // +2: 1-based, plus header row
       }
     }
   }
 
-  const keyColIdx = _keyFieldsFor(sheetName).map(function (f) { return header.indexOf(f); });
+  const keyColIdx = keyFields.map(function (f) { return header.indexOf(f); });
   const toAppend = [];
 
   rows.forEach(function (row) {
