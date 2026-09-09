@@ -174,3 +174,20 @@ assert set(b_out["birth_country"]) == {"Dominican Republic", "Venezuela"}
 print("build.enrich_with_age() OK -- age/bio columns attached correctly per player_id")
 
 print("\nALL AGE/IDENTITY CHECKS PASSED")
+
+# --- filter_out_mlb_debuted(): already-debuted MLB players get dropped ----------------
+mixed_rows = pd.DataFrame([
+    {"player_id": 501, "player_full_name": "Prospect A", "mlb_debut_date": None},
+    {"player_id": 999, "player_full_name": "Rehabbing Veteran", "mlb_debut_date": "2019-06-01"},
+])
+b_out, p_out, c_out = build.filter_out_mlb_debuted(mixed_rows, pd.DataFrame(), pd.DataFrame())
+assert list(b_out["player_id"]) == [501], b_out
+print("filter_out_mlb_debuted() OK -- already-debuted player (999) dropped, prospect (501) kept")
+
+# No-op when mlb_debut_date column isn't present (e.g. ENRICH_WITH_BIO=false)
+no_bio_rows = pd.DataFrame([{"player_id": 501, "player_full_name": "Prospect A"}])
+b_out2, _, _ = build.filter_out_mlb_debuted(no_bio_rows, pd.DataFrame(), pd.DataFrame())
+assert len(b_out2) == 1, b_out2
+print("filter_out_mlb_debuted() no-ops correctly when mlb_debut_date column is absent")
+
+print("\nALL MLB-DEBUT FILTER CHECKS PASSED")

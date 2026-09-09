@@ -105,6 +105,26 @@ def enrich_with_age(sheet_batter, sheet_pitcher, sheet_catcher):
     )
 
 
+def filter_out_mlb_debuted(sheet_batter, sheet_pitcher, sheet_catcher):
+    """Drop any player who already has an mlb_debut_date -- i.e. has appeared in a
+    real MLB game at some point (current call-up, rehab assignment, or a past
+    debut). These aren't prospects anymore and would distort the databank if left
+    in, even though their stat line at AA/A+/A is otherwise valid. Requires bio
+    enrichment to have run first (mlb_debut_date only exists after enrich_with_age);
+    no-ops safely if that column isn't present, e.g. ENRICH_WITH_BIO=false."""
+    def _drop_debuted(df):
+        if df.empty or "mlb_debut_date" not in df.columns:
+            return df
+        before = len(df)
+        out = df[df["mlb_debut_date"].isna()].copy()
+        dropped = before - len(out)
+        if dropped:
+            logger.info("Filtered out %s row(s) belonging to already-debuted MLB players", dropped)
+        return out
+
+    return _drop_debuted(sheet_batter), _drop_debuted(sheet_pitcher), _drop_debuted(sheet_catcher)
+
+
 def write_local_artifact(sheet_batter, sheet_pitcher, sheet_catcher) -> None:
     out_file = config.OUTPUT_DIR / "milb_prospect_scan_delta.xlsx"
     with pd.ExcelWriter(out_file, engine="openpyxl") as writer:
@@ -140,6 +160,9 @@ def run() -> None:
 
     if config.ENRICH_WITH_BIO:
         sheet_batter, sheet_pitcher, sheet_catcher = enrich_with_age(
+            sheet_batter, sheet_pitcher, sheet_catcher
+        )
+        sheet_batter, sheet_pitcher, sheet_catcher = filter_out_mlb_debuted(
             sheet_batter, sheet_pitcher, sheet_catcher
         )
 
