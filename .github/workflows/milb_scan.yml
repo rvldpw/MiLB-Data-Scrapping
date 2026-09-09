@@ -1,0 +1,45 @@
+name: MiLB Prospect Scan
+
+on:
+  schedule:
+    # Runs daily at 09:00 UTC (~16:00 WIB). Adjust to taste — during the MiLB
+    # off-season (roughly Oct-Mar) this just no-ops fast since the current season
+    # is already fully synced and there's nothing to fetch.
+    - cron: "0 9 * * *"
+  workflow_dispatch: {}   # manual "Run workflow" button in the Actions tab
+
+concurrency:
+  group: milb-scan
+  cancel-in-progress: false   # never let two runs write to the Sheet at once
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run scanner
+        env:
+          APPS_SCRIPT_URL: ${{ secrets.APPS_SCRIPT_URL }}
+          APPS_SCRIPT_SECRET: ${{ secrets.APPS_SCRIPT_SECRET }}
+        run: python run.py
+
+      - name: Upload this run's delta as an artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: milb-scan-delta-${{ github.run_id }}
+          path: output/milb_prospect_scan_delta.xlsx
+          if-no-files-found: ignore
+          retention-days: 14
