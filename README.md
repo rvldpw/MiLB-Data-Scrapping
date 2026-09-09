@@ -4,6 +4,10 @@ Scans **A / A+ / AA** MiLB levels only, pulls full 2021–current-season stats f
 every player still active, splits into **Batter / Pitcher / Catcher**, and keeps a
 running Google Sheet up to date automatically via GitHub Actions.
 
+📄 **Docs:** [`docs/DEPLOY.md`](docs/DEPLOY.md) (Apps Script setup/redeploy) ·
+[`docs/SCANNER_GUIDE.md`](docs/SCANNER_GUIDE.md) (module map + env vars) ·
+[`docs/CHANGELOG.md`](docs/CHANGELOG.md) (game-log update walkthrough)
+
 ## How the pieces fit together
 
 ```
@@ -77,6 +81,43 @@ Leave the two env vars unset to skip Sheets sync entirely and just get a local
 Open the Sheet's `_SyncState` tab and either delete that season's row, or set its
 `complete` cell to `FALSE`. The next run will re-fetch it in full.
 
+## Game-by-game logs
+A second, opt-in pipeline (`scanner/game_log.py`) syncs one row **per game** instead
+of one row per season — useful for spotting hot/cold streaks or in-season trends,
+which the season summaries can't show you.
+
+**Scope:** only players currently active (same set as the summary sheets), and only
+the (player, season, level) combinations their season stat line actually shows.
+
+**Why it's paced differently:** even scoped to active players only, a full
+2021–2025 game-by-game backfill is thousands of extra API calls — enough to blow
+past the Action's 90-minute timeout in one go. So it drains gradually:
+- The **current season** is always fetched in full, every run.
+- **One historical season** gets backfilled per run (oldest first), controlled by
+  `MAX_GAMELOG_SEASONS_PER_RUN` (default `1`). Raise it via a repo secret/env var if
+  you want to trade a longer run for a faster backfill — just watch the timeout.
+- Completion is tracked independently of the season-summary pipeline, in its own
+  `_SyncState_gamelog_batting` / `_SyncState_gamelog_pitching` tabs — so it can
+  never interfere with (or be blocked by) the summary sync.
+
+**Output:** two new auto-created tabs, `BatterGameLog` and `PitcherGameLog`
+(catcher game logs land in `BatterGameLog` too, same as how catchers' *season*
+batting line sits in the `Batter`/`Catcher` split upstream — filter by joining back
+to the summary tabs on `player_id` if you need to isolate catchers). Each row is
+keyed by `(player_id, season, game_pk)` for upsert, not `team_id`, since a player
+can only appear once per game.
+
+Turn it off entirely with `GAME_LOG_ENABLED=false` if you just want the season
+summaries for now.
+
+## Redeploying the Apps Script after an update
+Apps Script Web Apps **do not** pick up code changes just from saving the file —
+you need a fresh deployment:
+1. Extensions → Apps Script → paste in the updated `Code.gs`.
+2. **Deploy → Manage deployments → (pencil icon) Edit → Version: New version → Deploy.**
+   This keeps the same `/exec` URL, so no GitHub secret update needed.
+   (Only use "New deployment" instead if you specifically want a new URL.)
+
 ## Project layout
 ```
 run.py                          CLI entry point
@@ -85,9 +126,14 @@ scanner/
   fetch.py                      MLB Stats API session, field maps, row builder
   metrics.py                    derived rate stats (AVG/OBP/ERA/WHIP/etc.)
   sheets_sync.py                talks to the Apps Script web app
+  game_log.py                   game-by-game log sync (separate, paced pipeline)
   build.py                      orchestrates: decide what's new → pull → split → sync
 apps_script/Code.gs             paste into the Google Sheet's Apps Script editor
 .github/workflows/milb_scan.yml scheduled + manual trigger
+docs/
+  DEPLOY.md                     step-by-step: create + redeploy the Apps Script Web App
+  SCANNER_GUIDE.md               module-by-module guide + every env var this package reads
+  CHANGELOG.md                  what the game-log update added and how to roll it out
 ```
 
 ## Notes & limitations

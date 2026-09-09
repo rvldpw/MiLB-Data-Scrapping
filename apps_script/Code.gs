@@ -23,6 +23,15 @@
 
 const SYNC_STATE_SHEET = "_SyncState";
 const KEY_FIELDS = ["player_id", "season", "team_id"];
+const GAME_LOG_KEY_FIELDS = ["player_id", "season", "game_pk"];
+
+function _keyFieldsFor(sheetName) {
+  return sheetName.indexOf("GameLog") !== -1 ? GAME_LOG_KEY_FIELDS : KEY_FIELDS;
+}
+
+function _stateSheetName(kind) {
+  return kind && kind !== "season" ? "_SyncState_" + kind : SYNC_STATE_SHEET;
+}
 
 function _secret() {
   return PropertiesService.getScriptProperties().getProperty("SHARED_SECRET");
@@ -60,7 +69,10 @@ function doGet(e) {
 
     const action = params.action;
     if (action === "state") {
-      return _jsonOut({ ok: true, completed_seasons: _getCompletedSeasons() });
+      return _jsonOut({ ok: true, completed_seasons: _getCompletedSeasons(params.kind || "season") });
+    }
+    if (action === "season_rows") {
+      return _jsonOut({ ok: true, rows: _getSeasonLevelRows(params.sheet) });
     }
     return _jsonOut({ ok: false, error: "Unknown action: " + action });
   } catch (err) {
@@ -79,7 +91,7 @@ function doPost(e) {
       return _jsonOut({ ok: true, upserted: n });
     }
     if (action === "mark_complete") {
-      _markSeasonComplete(body.season);
+      _markSeasonComplete(body.season, body.kind || "season");
       return _jsonOut({ ok: true });
     }
     return _jsonOut({ ok: false, error: "Unknown action: " + action });
@@ -116,7 +128,7 @@ function _upsertRows(sheetName, rows) {
     }
   }
 
-  const keyColIdx = KEY_FIELDS.map(function (f) { return header.indexOf(f); });
+  const keyColIdx = _keyFieldsFor(sheetName).map(function (f) { return header.indexOf(f); });
   const toAppend = [];
 
   rows.forEach(function (row) {
@@ -141,8 +153,8 @@ function _upsertRows(sheetName, rows) {
   return rows.length;
 }
 
-function _getCompletedSeasons() {
-  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SYNC_STATE_SHEET);
+function _getCompletedSeasons(kind) {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(_stateSheetName(kind));
   if (!sheet || sheet.getLastRow() < 2) return [];
 
   const data = sheet.getRange(2, 1, sheet.getLastRow() - 1, 2).getValues();
@@ -151,8 +163,35 @@ function _getCompletedSeasons() {
     .map(function (row) { return row[0]; });
 }
 
-function _markSeasonComplete(season) {
-  const sheet = _getOrCreateSheet(SYNC_STATE_SHEET);
+/** Distinct (player_id, season, team_level) triples already on `sheetName` --
+ * how the game-log pipeline finds targets across every season ever synced. */
+function _getSeasonLevelRows(sheetName) {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(sheetName);
+  if (!sheet || sheet.getLastRow() < 2) return [];
+
+  const lastRow = sheet.getLastRow();
+  const lastCol = sheet.getLastColumn();
+  const header = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
+  const pIdx = header.indexOf("player_id");
+  const sIdx = header.indexOf("season");
+  const lIdx = header.indexOf("team_level");
+  if (pIdx < 0 || sIdx < 0 || lIdx < 0) return [];
+
+  const data = sheet.getRange(2, 1, lastRow - 1, lastCol).getValues();
+  const seen = {};
+  const out = [];
+  data.forEach(function (row) {
+    const key = row[pIdx] + "|" + row[sIdx] + "|" + row[lIdx];
+    if (!seen[key]) {
+      seen[key] = true;
+      out.push([row[pIdx], row[sIdx], row[lIdx]]);
+    }
+  });
+  return out;
+}
+
+function _markSeasonComplete(season, kind) {
+  const sheet = _getOrCreateSheet(_stateSheetName(kind));
   if (sheet.getLastRow() === 0) {
     sheet.getRange(1, 1, 1, 3).setValues([["season", "complete", "synced_at"]]);
   }

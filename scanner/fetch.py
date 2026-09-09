@@ -237,3 +237,57 @@ def fetch_player_bios(player_ids: list[int]) -> pd.DataFrame:
         if i % 200 == 0:
             logger.info("Fetched bios for %s/%s active players", i, len(player_ids))
     return pd.DataFrame(rows)
+
+
+def fetch_player_game_log(player_id: int, season: int, level: str, stats_type: str) -> pd.DataFrame:
+    """One player's game-by-game log for one (season, level). Reuses the same
+    BATTING_FIELD_MAP/PITCHING_FIELD_MAP as the season totals -- `stats=gameLog`
+    returns the identical `stat` schema, just one row per game instead of one row
+    aggregated over the whole season."""
+    _validate_season(season)
+    level_id = _validate_level(level)
+    group = "hitting" if stats_type == "batting" else "pitching"
+
+    url = (
+        f"{config.STATS_API_HOST}/api/v1/people/{player_id}/stats"
+        f"?stats=gameLog&season={season}&sportId={level_id}&group={group}&gameType=R"
+    )
+    data = safe_get_json(url)
+    splits = ((data.get("stats") or [{}])[0].get("splits") or []) if data else []
+    if not splits:
+        return pd.DataFrame()
+
+    field_map = BATTING_FIELD_MAP if stats_type == "batting" else PITCHING_FIELD_MAP
+    rows = []
+    for split in splits:
+        stat = split.get("stat", {})
+        team = split.get("team") or {}
+        opponent = split.get("opponent") or {}
+        row = {
+            "player_id": player_id,
+            "season": season,
+            "team_level": level,
+            "game_pk": (split.get("game") or {}).get("gamePk"),
+            "game_date": split.get("date"),
+            "team_id": team.get("id"),
+            "team_name": team.get("name"),
+            "opponent_id": opponent.get("id"),
+            "opponent_name": opponent.get("name"),
+            "is_home": split.get("isHome"),
+        }
+        for raw_key, out_col in field_map.items():
+            row[out_col] = stat.get(raw_key)
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def fetch_game_logs(targets: list[tuple[int, int, str]], stats_type: str) -> pd.DataFrame:
+    """`targets` is a list of (player_id, season, level) tuples -- exactly the
+    combinations known to exist (from season data already on the Sheet), never a
+    blind player x season x level cross-product. One API call per target."""
+    frames = []
+    for i, (player_id, season, level) in enumerate(targets, start=1):
+        frames.append(fetch_player_game_log(player_id, season, level, stats_type))
+        if i % 200 == 0:
+            logger.info("Fetched game logs for %s/%s (player, season, level) combos", i, len(targets))
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()

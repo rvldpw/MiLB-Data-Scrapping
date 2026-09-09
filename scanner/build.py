@@ -21,7 +21,7 @@ import logging
 
 import pandas as pd
 
-from . import config, fetch, metrics, sheets_sync
+from . import config, fetch, game_log, metrics, sheets_sync
 
 logger = logging.getLogger("milb_scanner.build")
 
@@ -188,5 +188,10 @@ def run() -> None:
 
     for season in freshly_final_seasons:
         sheets_sync.mark_season_complete(season)
+
+    active_batter_ids = set(sheet_batter["player_id"]) if not sheet_batter.empty else set()
+    active_batter_ids |= set(sheet_catcher["player_id"]) if not sheet_catcher.empty else set()
+    active_pitcher_ids = set(sheet_pitcher["player_id"]) if not sheet_pitcher.empty else set()
+    game_log.run(active_batter_ids, active_pitcher_ids)
 
     logger.info("Run complete.")

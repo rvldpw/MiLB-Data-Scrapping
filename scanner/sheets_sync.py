@@ -22,25 +22,50 @@ from . import config
 logger = logging.getLogger("milb_scanner.sheets_sync")
 
 
-def get_completed_seasons() -> set[int]:
-    """Seasons the Sheet already has fully synced. Empty set if sync is disabled or
-    this is the first-ever run (nothing marked complete yet)."""
+def get_completed_seasons(kind: str = "season") -> set[int]:
+    """Seasons the Sheet already has fully synced for the given `kind`. `kind`
+    keeps independent pipelines (season summaries vs. game logs) from stepping on
+    each other's completion state -- each gets its own `_SyncState*` tab on the
+    Apps Script side. Empty set if sync is disabled or nothing's marked yet."""
     if not config.SHEETS_SYNC_ENABLED:
         return set()
 
     try:
         resp = requests.get(
             config.APPS_SCRIPT_URL,
-            params={"action": "state", "secret": config.APPS_SCRIPT_SECRET},
+            params={"action": "state", "secret": config.APPS_SCRIPT_SECRET, "kind": kind},
             timeout=30,
         )
         resp.raise_for_status()
         data = resp.json()
     except (requests.RequestException, ValueError) as exc:
-        logger.warning("Could not read sync state from Sheets, assuming nothing synced: %s", exc)
+        logger.warning("Could not read sync state (%s) from Sheets, assuming nothing synced: %s", kind, exc)
         return set()
 
     return {int(s) for s in data.get("completed_seasons", [])}
+
+
+def get_season_level_rows(sheet_name: str) -> pd.DataFrame:
+    """Distinct (player_id, season, team_level) triples already written to
+    `sheet_name`. This is how the game-log pipeline finds targets across every
+    season ever synced -- not just what the current run happened to (re)fetch,
+    since already-complete seasons aren't re-pulled from the API anymore."""
+    if not config.SHEETS_SYNC_ENABLED:
+        return pd.DataFrame(columns=["player_id", "season", "team_level"])
+
+    try:
+        resp = requests.get(
+            config.APPS_SCRIPT_URL,
+            params={"action": "season_rows", "secret": config.APPS_SCRIPT_SECRET, "sheet": sheet_name},
+            timeout=60,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except (requests.RequestException, ValueError) as exc:
+        logger.warning("Could not read season rows from '%s': %s", sheet_name, exc)
+        return pd.DataFrame(columns=["player_id", "season", "team_level"])
+
+    return pd.DataFrame(data.get("rows", []), columns=["player_id", "season", "team_level"])
 
 
 def _post(payload: dict) -> bool:
@@ -88,13 +113,14 @@ def push_rows(sheet_name: str, df: pd.DataFrame) -> bool:
     return all_ok
 
 
-def mark_season_complete(season: int) -> bool:
+def mark_season_complete(season: int, kind: str = "season") -> bool:
     if not config.SHEETS_SYNC_ENABLED:
         return True
     ok = _post({
         "secret": config.APPS_SCRIPT_SECRET,
         "action": "mark_complete",
         "season": season,
+        "kind": kind,
     })
-    logger.info("Marked season %s complete -> %s", season, "ok" if ok else "FAILED")
+    logger.info("Marked season %s (%s) complete -> %s", season, kind, "ok" if ok else "FAILED")
     return ok

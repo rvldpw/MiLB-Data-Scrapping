@@ -52,6 +52,16 @@ OUTPUT_DIR.mkdir(exist_ok=True)
 # "Active" = has a stat line in the most recent in-scope season.
 ACTIVE_SEASON = SEASON_END
 
+# --- Game-by-game logs -----------------------------------------------------------------
+# Separate opt-in pipeline from the season summaries above: same active-player scope,
+# but one row per game instead of one row per season. A full 2021-2025 game-by-game
+# backfill for every active prospect is thousands of extra API calls, so historical
+# seasons are throttled to this many not-yet-synced seasons per run -- the current
+# season is always fetched in full every run regardless of this cap. At 1/run, a
+# 5-season backfill drains over ~5 daily runs instead of one 90-minute timeout.
+GAME_LOG_ENABLED = os.environ.get("GAME_LOG_ENABLED", "true").lower() != "false"
+MAX_GAMELOG_SEASONS_PER_RUN = int(os.environ.get("MAX_GAMELOG_SEASONS_PER_RUN", "1"))
+
 # Bio/age enrichment — one extra API call per unique active player, ID-keyed (never
 # name-matched). Adds real minutes to a run with thousands of active players, so
 # it's toggle-able. Default on since age is core to how you evaluate prospects.
