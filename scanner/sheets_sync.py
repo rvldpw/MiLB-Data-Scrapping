@@ -64,7 +64,8 @@ def push_rows(sheet_name: str, df: pd.DataFrame) -> bool:
     if not config.SHEETS_SYNC_ENABLED or df.empty:
         return True
 
-    records = df.where(pd.notnull(df), None).to_dict(orient="records")
+    clean = df.replace([float("inf"), float("-inf")], pd.NA)
+    records = clean.astype(object).where(pd.notnull(clean), None).to_dict(orient="records")
     chunk_size = config.SHEETS_PUSH_CHUNK_SIZE
     n_chunks = math.ceil(len(records) / chunk_size)
     all_ok = True
