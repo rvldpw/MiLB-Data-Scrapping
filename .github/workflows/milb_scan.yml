@@ -33,6 +33,7 @@ jobs:
         env:
           APPS_SCRIPT_URL: ${{ secrets.APPS_SCRIPT_URL }}
           APPS_SCRIPT_SECRET: ${{ secrets.APPS_SCRIPT_SECRET }}
+          MAX_GAMELOG_SEASONS_PER_RUN: "2"
         run: python run.py
 
       - name: Upload this run's delta as an artifact
