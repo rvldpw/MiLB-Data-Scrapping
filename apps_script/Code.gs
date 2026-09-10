@@ -101,17 +101,27 @@ function doPost(e) {
 }
 
 /** Upsert `rows` (array of flat objects) into `sheetName`, keyed by KEY_FIELDS.
- * Creates the sheet + header row on first write. Returns rows written. */
+ * Creates the sheet + header row on first write. Returns rows written.
+ *
+ * Writes at most 2 Sheets API calls total, regardless of how many rows are new
+ * vs. updates: one bulk rewrite of the existing data block (only if anything in
+ * it changed) and one bulk append for genuinely new rows. An earlier version
+ * wrote each updated row with its own setValues() call -- fine for a first-ever
+ * backfill (all inserts), but once most incoming rows are updates to rows that
+ * already exist (i.e. every run after the first), hundreds of individual writes
+ * per chunk routinely blew past Apps Script's 6-minute per-invocation execution
+ * limit, which is what caused the timeouts/garbled errors on reruns. */
 function _upsertRows(sheetName, rows) {
   if (!rows || rows.length === 0) return 0;
 
   const sheet = _getOrCreateSheet(sheetName);
   const lastRow = sheet.getLastRow();
   const lastCol = sheet.getLastColumn();
+  const keyFields = _keyFieldsFor(sheetName);
 
   let header;
-  let existingIndex = {}; // key -> 1-based sheet row number
-  const keyFields = _keyFieldsFor(sheetName);
+  let existingData = []; // full grid of existing rows, mutated in place for updates
+  let existingIndex = {}; // key -> 0-based index into existingData
 
   if (lastRow === 0) {
     // Brand new sheet: header comes from the union-preserving order of the first row.
@@ -120,23 +130,18 @@ function _upsertRows(sheetName, rows) {
   } else {
     header = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
     if (lastRow > 1) {
-      // Only read the key columns, not the full row width -- reading all ~90
-      // columns for every existing row on every chunk push is what made this
-      // scale quadratically with total rows-pushed-this-run and eventually blew
-      // past the client's request timeout on large sheets.
+      existingData = sheet.getRange(2, 1, lastRow - 1, lastCol).getValues();
       const keyColIdx = keyFields.map(function (f) { return header.indexOf(f); });
-      const keyColumns = keyColIdx.map(function (c) {
-        return sheet.getRange(2, c + 1, lastRow - 1, 1).getValues();
-      });
-      for (let i = 0; i < lastRow - 1; i++) {
-        const key = keyColumns.map(function (col) { return col[i][0]; }).join("|");
-        existingIndex[key] = i + 2; // +2: 1-based, plus header row
+      for (let i = 0; i < existingData.length; i++) {
+        const key = keyColIdx.map(function (c) { return existingData[i][c]; }).join("|");
+        existingIndex[key] = i;
       }
     }
   }
 
   const keyColIdx = keyFields.map(function (f) { return header.indexOf(f); });
   const toAppend = [];
+  let dirty = false;
 
   rows.forEach(function (row) {
     const values = header.map(function (col) {
@@ -145,13 +150,17 @@ function _upsertRows(sheetName, rows) {
     });
     const key = keyColIdx.map(function (c) { return values[c]; }).join("|");
 
-    if (existingIndex[key]) {
-      sheet.getRange(existingIndex[key], 1, 1, header.length).setValues([values]);
+    if (key in existingIndex) {
+      existingData[existingIndex[key]] = values;
+      dirty = true;
     } else {
       toAppend.push(values);
     }
   });
 
+  if (dirty) {
+    sheet.getRange(2, 1, existingData.length, header.length).setValues(existingData);
+  }
   if (toAppend.length > 0) {
     sheet.getRange(sheet.getLastRow() + 1, 1, toAppend.length, header.length)
       .setValues(toAppend);

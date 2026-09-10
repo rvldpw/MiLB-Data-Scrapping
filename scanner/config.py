@@ -40,7 +40,10 @@ BDFED_HOST = "https://bdfed.stitch.mlbinfra.com"
 APPS_SCRIPT_URL = os.environ.get("APPS_SCRIPT_URL", "")
 APPS_SCRIPT_SECRET = os.environ.get("APPS_SCRIPT_SECRET", "")
 SHEETS_SYNC_ENABLED = bool(APPS_SCRIPT_URL and APPS_SCRIPT_SECRET)
-SHEETS_PUSH_CHUNK_SIZE = 300  # rows per HTTP request, keeps Apps Script fast per call
+# Rows per HTTP request. Each push now costs roughly one bulk read + one bulk
+# write of the whole existing sheet, regardless of chunk size -- so fewer, larger
+# chunks means paying that fixed per-call cost fewer times, not more small calls.
+SHEETS_PUSH_CHUNK_SIZE = int(os.environ.get("SHEETS_PUSH_CHUNK_SIZE", "2000"))
 
 # --- Local scratch space (artifacts, run-scoped cache) --------------------------------
 BASE_DIR = Path(__file__).resolve().parent.parent
