@@ -62,6 +62,18 @@ def _bucket(active: bool, sport_id, roster_status: str) -> str:
     return "Other / Unknown"
 
 
+def _height_to_cm(height: str):
+    """MLB Stats API returns height as e.g. \"6' 2\\\"\" - convert to whole cm."""
+    if not height:
+        return None
+    try:
+        feet, inches = height.replace('"', "").split("'")
+        total_inches = int(feet.strip()) * 12 + int(inches.strip())
+        return round(total_inches * 2.54)
+    except Exception:
+        return None
+
+
 def _fetch_one(player_id: int) -> dict:
     try:
         r = requests.get(API.format(int(player_id)), timeout=6)
@@ -74,17 +86,22 @@ def _fetch_one(player_id: int) -> dict:
         sport = team.get("sport") or {}
         roster_status = (p.get("status") or {}).get("description")
         active = bool(p.get("active"))
+        birthplace = ", ".join(x for x in (p.get("birthCity"), p.get("birthStateProvince") or p.get("birthCountry")) if x)
         row = dict(
             player_id=int(player_id), age=p.get("currentAge"), birth_date=p.get("birthDate"),
             debut_date=p.get("mlbDebutDate"), last_played=p.get("lastPlayedDate"),
             active=active, current_team=team.get("name"), sport_id=sport.get("id"),
-            roster_status=roster_status, fetched_at=time.time(),
+            roster_status=roster_status, height=p.get("height"), height_cm=_height_to_cm(p.get("height")),
+            weight_lb=p.get("weight"), weight_kg=round(p["weight"] * 0.453592) if p.get("weight") else None,
+            bats=(p.get("batSide") or {}).get("description"), throws=(p.get("pitchHand") or {}).get("description"),
+            birthplace=birthplace, fetched_at=time.time(),
         )
         row["status"] = _bucket(active, sport.get("id"), roster_status)
     except Exception:
         row = dict(player_id=int(player_id), age=None, birth_date=None, debut_date=None,
                    last_played=None, active=None, current_team=None, sport_id=None,
-                   roster_status=None, status="Other / Unknown", fetched_at=time.time())
+                   roster_status=None, height=None, height_cm=None, weight_lb=None, weight_kg=None,
+                   bats=None, throws=None, birthplace=None, status="Other / Unknown", fetched_at=time.time())
     return row
 
 
