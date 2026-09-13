@@ -115,8 +115,9 @@ def test_failed_game_does_not_complete_and_successes_persist(tmp_path):
     client = FakeClient([sample(pk=1), sample(pk=2)])
     client.failed.add(1)
     store = LocalStore(tmp_path)
-    with pytest.raises(IncompleteRun):
-        run(settings(), client, store, at("2026-09-10"))
+    summary = run(settings(), client, store, at("2026-09-10"))
+    assert summary["status"] == "partial"
+    assert summary["failures"] == 1
     index = read_json(store, "state/2021.json", {})
     assert set(index) == {"2"}
     client.failed.clear()
