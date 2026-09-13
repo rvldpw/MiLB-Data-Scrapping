@@ -1,259 +1,159 @@
-"""Sabermetric formulas, MLB-style, applied to the MiLB game-log columns.
-
-Two things worth knowing before touching this file:
-
-1. wOBA linear weights (wBB/wHBP/w1B/...) are the standard FanGraphs-style
-   run-value coefficients. They barely move year to year in the majors and
-   there's no MiLB-specific published set, so we use one fixed set for all
-   seasons/levels. Everything downstream of wOBA (wRC+, the FIP constant) is
-   instead centered on league averages computed straight from this dataset,
-   per season + level, so "average" always means "average at that level that
-   year" rather than an imported MLB number.
-2. Every function takes an already-filtered slice of the batting/pitching
-   frame and returns one dict of aggregated stats. Nothing here mutates the
-   input.
-"""
+"""Aggregate counts first, then calculate rates. Unknown values stay unknown."""
 import numpy as np
 import pandas as pd
 
-# ---- batting ---------------------------------------------------------
+from dashboard.metric_catalog import RAW_FIELDS
 
-WOBA_W = dict(bb=0.690, hbp=0.722, s1=0.888, s2=1.271, s3=1.616, hr=2.101)
+WOBA_W = dict(bb=.690, hbp=.722, s1=.888, s2=1.271, s3=1.616, hr=2.101)
 WOBA_SCALE = 1.22
 
 
-def _safe_div(n, d):
-    return n / d if d else np.nan
+def divide(n, d):
+    return float(n / d) if pd.notna(n) and pd.notna(d) and np.isfinite(n) and np.isfinite(d) and d > 0 else np.nan
 
 
-def batting_line(df: pd.DataFrame) -> dict:
-    g = df.agg({
-        "batting_AB": "sum", "batting_H": "sum", "batting_2B": "sum", "batting_3B": "sum",
-        "batting_HR": "sum", "batting_BB": "sum", "batting_IBB": "sum", "batting_HBP": "sum",
-        "batting_SF": "sum", "batting_SO": "sum", "batting_PA": "sum", "batting_SB": "sum",
-        "batting_CS": "sum", "batting_TB": "sum", "batting_R": "sum", "batting_RBI": "sum",
-    })
-    ab, h, d2, d3, hr = g["batting_AB"], g["batting_H"], g["batting_2B"], g["batting_3B"], g["batting_HR"]
-    bb, ibb, hbp, sf, so, pa = (g["batting_BB"], g["batting_IBB"], g["batting_HBP"],
-                                 g["batting_SF"], g["batting_SO"], g["batting_PA"])
-    tb, sb, cs = g["batting_TB"], g["batting_SB"], g["batting_CS"]
-    s1 = h - d2 - d3 - hr
-    ubb = bb - ibb
-
-    avg = _safe_div(h, ab)
-    obp = _safe_div(h + bb + hbp, ab + bb + hbp + sf)
-    slg = _safe_div(tb, ab)
-    woba_num = WOBA_W["bb"] * ubb + WOBA_W["hbp"] * hbp + WOBA_W["s1"] * s1 + WOBA_W["s2"] * d2 \
-        + WOBA_W["s3"] * d3 + WOBA_W["hr"] * hr
-    woba_den = ab + bb - ibb + sf + hbp
-    woba = _safe_div(woba_num, woba_den)
-    babip = _safe_div(h - hr, ab - so - hr + sf)
-
-    return dict(
-        G=df["game_pk"].nunique(), PA=pa, AB=ab, H=h, HR=hr, RBI=g["batting_RBI"], R=g["batting_R"],
-        SB=sb, CS=cs, BB=bb, SO=so, AVG=avg, OBP=obp, SLG=slg, OPS=(obp or 0) + (slg or 0),
-        ISO=(slg - avg) if pd.notna(slg) and pd.notna(avg) else np.nan,
-        BABIP=babip, BB_pct=_safe_div(bb, pa), K_pct=_safe_div(so, pa),
-        SB_pct=_safe_div(sb, sb + cs), wOBA=woba,
-    )
-
-
-def league_batting_context(df: pd.DataFrame, keys=("season", "team_level")) -> pd.DataFrame:
-    """Per season+level (or season+level+pos_group) league-average slash line & R/PA."""
-    rows = []
-    for key, sub in df.groupby(list(keys)):
-        line = batting_line(sub)
-        line.update(dict(zip(keys, key if isinstance(key, tuple) else (key,))))
-        line["R_PA"] = _safe_div(sub["batting_R"].sum(), sub["batting_PA"].sum())
-        rows.append(line)
-    return pd.DataFrame(rows)
-
-
-def wrc_plus(line: dict, lg_line: dict) -> float:
-    """wRC+, no park factor (none is available in this dataset)."""
-    if not lg_line.get("wOBA") or pd.isna(line.get("wOBA")) or not line.get("PA"):
+def total(df, column):
+    if df.empty or column not in df:
         return np.nan
-    wraa_pa = (line["wOBA"] - lg_line["wOBA"]) / WOBA_SCALE
-    lg_r_pa = lg_line.get("R_PA", np.nan)
-    if not lg_r_pa:
-        return np.nan
-    return round(100 * (wraa_pa + lg_r_pa) / lg_r_pa, 1)
+    values = pd.to_numeric(df[column], errors="coerce")
+    return float(values.sum()) if values.notna().all() else np.nan
 
 
-def ops_plus(line: dict, lg_line: dict) -> float:
-    if not lg_line.get("OBP") or not lg_line.get("SLG") or pd.isna(line.get("OBP")):
-        return np.nan
-    return round(100 * (line["OBP"] / lg_line["OBP"] + line["SLG"] / lg_line["SLG"] - 1), 1)
+def batting_line(df):
+    s = {c.removeprefix("batting_"): total(df, c) for c in RAW_FIELDS["batting"].values()}
+    h, ab, bb, hbp, sf, so, hr = (s[k] for k in ("H", "AB", "BB", "HBP", "SF", "SO", "HR"))
+    s["G"] = df["game_pk"].nunique() if "game_pk" in df else 0
+    s["1B"] = h - s["2B"] - s["3B"] - hr
+    s["AVG"] = divide(h, ab)
+    s["OBP"] = divide(h + bb + hbp, ab + bb + hbp + sf)
+    s["SLG"] = divide(s["TB"], ab)
+    s["OPS"] = s["OBP"] + s["SLG"]
+    s["ISO"] = s["SLG"] - s["AVG"]
+    s["BABIP"] = divide(h - hr, ab - so - hr + sf)
+    s["BB_pct"], s["K_pct"] = divide(bb, s["PA"]), divide(so, s["PA"])
+    s["SB_pct"] = divide(s["SB"], s["SB"] + s["CS"])
+    s["GO/AO"] = divide(s["GO"], s["AO"])
+    s["wOBA"] = divide(.690 * (bb - s["IBB"]) + .722 * hbp + .888 * s["1B"]
+                         + 1.271 * s["2B"] + 1.616 * s["3B"] + 2.101 * hr,
+                         ab + bb - s["IBB"] + sf + hbp)
+    s["R_PA"] = divide(s["R"], s["PA"])
+    return s
 
 
-# ---- pitching ----------------------------------------------------------
-
-def pitching_line(df: pd.DataFrame) -> dict:
-    g = df.agg({
-        "pitching_outs": "sum", "pitching_H": "sum", "pitching_R": "sum", "pitching_ER": "sum",
-        "pitching_HR": "sum", "pitching_BB": "sum", "pitching_HBP": "sum", "pitching_SO": "sum",
-        "pitching_BF": "sum", "pitching_PI": "sum", "pitching_PI_strikes": "sum",
-        "pitching_W": "sum", "pitching_L": "sum", "pitching_SV": "sum", "pitching_HLD": "sum",
-    })
-    ip = g["pitching_outs"] / 3.0
-    bf = g["pitching_BF"]
-    era = _safe_div(g["pitching_ER"] * 9, ip)
-    whip = _safe_div(g["pitching_BB"] + g["pitching_H"], ip)
-    return dict(
-        G=df["game_pk"].nunique(), GS=int((df["pitching_GS"].fillna(0) > 0).sum()), IP=ip,
-        H=g["pitching_H"], R=g["pitching_R"], ER=g["pitching_ER"], HR=g["pitching_HR"],
-        BB=g["pitching_BB"], SO=g["pitching_SO"], HBP=g["pitching_HBP"], BF=bf,
-        W=g["pitching_W"], L=g["pitching_L"], SV=g["pitching_SV"], HLD=g["pitching_HLD"],
-        ERA=era, WHIP=whip, K9=_safe_div(g["pitching_SO"] * 9, ip), BB9=_safe_div(g["pitching_BB"] * 9, ip),
-        HR9=_safe_div(g["pitching_HR"] * 9, ip), K_pct=_safe_div(g["pitching_SO"], bf),
-        BB_pct=_safe_div(g["pitching_BB"], bf), Strike_pct=_safe_div(g["pitching_PI_strikes"], g["pitching_PI"]),
-    )
-
-
-def league_pitching_context(df: pd.DataFrame, keys=("season", "team_level")) -> pd.DataFrame:
-    rows = []
-    for key, sub in df.groupby(list(keys)):
-        line = pitching_line(sub)
-        line.update(dict(zip(keys, key if isinstance(key, tuple) else (key,))))
-        rows.append(line)
-    out = pd.DataFrame(rows)
-    out["fip_const"] = out["ERA"] - (13 * out["HR"] + 3 * (out["BB"] + out["HBP"]) - 2 * out["SO"]) / out["IP"]
-    return out
+def pitching_line(df):
+    s = {c.removeprefix("pitching_"): total(df, c) for c in RAW_FIELDS["pitching"].values() if c != "pitching_IP_str"}
+    s["G"] = df["game_pk"].nunique() if "game_pk" in df else 0
+    s["IP"] = s["outs"] / 3
+    s["ERA"], s["RA9"] = divide(27 * s["ER"], s["outs"]), divide(27 * s["R"], s["outs"])
+    s["WHIP"] = divide(3 * (s["H"] + s["BB"]), s["outs"])
+    for key, counter in (("K9", "SO"), ("BB9", "BB"), ("HR9", "HR"), ("H9", "H")):
+        s[key] = divide(27 * s[counter], s["outs"])
+    s["K_pct"], s["BB_pct"] = divide(s["SO"], s["BF"]), divide(s["BB"], s["BF"])
+    s["K_BB_pct"] = s["K_pct"] - s["BB_pct"]
+    s["Strike_pct"] = divide(s["PI_strikes"], s["PI"])
+    s["W_pct"] = divide(s["W"], s["W"] + s["L"])
+    s["SO/BB"], s["BB/SO"] = divide(s["SO"], s["BB"]), divide(s["BB"], s["SO"])
+    s["BABIP"] = divide(s["H"] - s["HR"], s["AB"] - s["SO"] - s["HR"] + s["SF"])
+    s["BA"] = divide(s["H"], s["AB"])
+    s["OBP"] = divide(s["H"] + s["BB"] + s["HBP"], s["AB"] + s["BB"] + s["HBP"] + s["SF"])
+    s["SLG"] = divide(s["H"] + s["2B"] + 2 * s["3B"] + 3 * s["HR"], s["AB"])
+    s["OPS"], s["ISO"] = s["OBP"] + s["SLG"], s["SLG"] - s["BA"]
+    s["PI/PA"], s["HR/PA"], s["PI/IP"] = divide(s["PI"], s["BF"]), divide(s["HR"], s["BF"]), divide(s["PI"], s["IP"])
+    s["fip_raw"] = divide(13 * s["HR"] + 3 * (s["BB"] + s["HBP"]) - 2 * s["SO"], s["IP"])
+    s["fip_const"] = s["ERA"] - s["fip_raw"]
+    return s
 
 
-def fip(line: dict, lg_line: dict) -> float:
-    if not line.get("IP"):
-        return np.nan
-    raw = (13 * line["HR"] + 3 * (line["BB"] + line["HBP"]) - 2 * line["SO"]) / line["IP"]
-    return round(raw + lg_line.get("fip_const", 3.10), 2)
+def line_for(df, kind):
+    return batting_line(df) if kind == "batting" else pitching_line(df)
 
 
-# ---- shared -------------------------------------------------------------
+def wrc_plus(line, context):
+    return 100 * divide((line.get("wOBA", np.nan) - context.get("wOBA", np.nan)) / WOBA_SCALE
+                         + context.get("R_PA", np.nan), context.get("R_PA", np.nan))
 
-def rolling_rate(df: pd.DataFrame, kind: str, window: int) -> pd.DataFrame:
-    """Trailing-N-game rolling rate stat, one row per game, for a trend line."""
-    df = df.sort_values("game_date")
+
+def ops_plus(line, context):
+    return 100 * (divide(line.get("OBP", np.nan), context.get("OBP", np.nan))
+                  + divide(line.get("SLG", np.nan), context.get("SLG", np.nan)) - 1)
+
+
+def fip(line, context):
+    return line.get("fip_raw", np.nan) + context.get("fip_const", np.nan)
+
+
+def enriched_line(df, kind, context):
+    result = line_for(df, kind)
     if kind == "batting":
-        cols = ["batting_AB", "batting_H", "batting_BB", "batting_IBB", "batting_HBP",
-                "batting_SF", "batting_2B", "batting_3B", "batting_HR", "batting_TB", "batting_PA"]
-        roll = df[cols].rolling(window, min_periods=max(3, window // 3)).sum()
-        s1 = roll["batting_H"] - roll["batting_2B"] - roll["batting_3B"] - roll["batting_HR"]
-        ubb = roll["batting_BB"] - roll["batting_IBB"]
-        num = (WOBA_W["bb"] * ubb + WOBA_W["hbp"] * roll["batting_HBP"] + WOBA_W["s1"] * s1
-               + WOBA_W["s2"] * roll["batting_2B"] + WOBA_W["s3"] * roll["batting_3B"] + WOBA_W["hr"] * roll["batting_HR"])
-        den = roll["batting_AB"] + roll["batting_BB"] - roll["batting_IBB"] + roll["batting_SF"] + roll["batting_HBP"]
-        out = pd.DataFrame({"game_date": df["game_date"], "value": num / den})
-        out["metric"] = f"Rolling {window}-game wOBA"
+        result.update(wRC_est=wrc_plus(result, context), OPS_index=ops_plus(result, context))
     else:
-        cols = ["pitching_outs", "pitching_ER", "pitching_H", "pitching_BB", "pitching_HR", "pitching_SO"]
-        roll = df[cols].rolling(window, min_periods=max(3, window // 3)).sum()
-        ip = roll["pitching_outs"] / 3.0
-        out = pd.DataFrame({"game_date": df["game_date"], "value": roll["pitching_ER"] * 9 / ip})
-        out["metric"] = f"Rolling {window}-game ERA"
-    return out.dropna()
+        result["FIP_est"] = fip(result, context)
+    return result
 
 
-def monthly_split(df: pd.DataFrame, kind: str) -> pd.DataFrame:
+def player_table(df, kind):
+    context = line_for(df, kind)
     rows = []
-    for month, sub in df.groupby("month"):
-        line = batting_line(sub) if kind == "batting" else pitching_line(sub)
-        line["month"] = month
-        rows.append(line)
-    return pd.DataFrame(rows).sort_values("month")
-
-
-def season_split(df: pd.DataFrame, kind: str) -> pd.DataFrame:
-    rows = []
-    for season, sub in df.groupby("season"):
-        line = batting_line(sub) if kind == "batting" else pitching_line(sub)
-        line["season"] = season
-        rows.append(line)
-    return pd.DataFrame(rows).sort_values("season")
-
-
-def home_away_split(df: pd.DataFrame, kind: str) -> pd.DataFrame:
-    rows = []
-    for is_home, sub in df.groupby("is_home"):
-        line = batting_line(sub) if kind == "batting" else pitching_line(sub)
-        line["split"] = "Home" if is_home else "Away"
-        rows.append(line)
+    for pid, sub in df.groupby("player_id", sort=False):
+        latest = sub.sort_values(["game_date", "game_pk"]).iloc[-1]
+        row = enriched_line(sub, kind, context)
+        row.update(player_id=pid, team_id=latest.get("team_id"), Player=latest["player_full_name"], Team=latest["team_name"],
+                   Position=latest.get("pos_group", "P"), Role=latest.get("role", ""))
+        rows.append(row)
     return pd.DataFrame(rows)
 
 
-def percentile_rank(pool: pd.Series, value) -> float:
-    """Where `value` sits (0-100) inside `pool`. Used to turn a raw rate stat
-    into something comparable across metrics for a radar chart."""
-    s = pool.dropna()
-    if value is None or pd.isna(value) or s.empty:
+def percentile_rank(pool, value, lower=False):
+    pool = pd.to_numeric(pool, errors="coerce").dropna()
+    if len(pool) < 5 or pd.isna(value):
         return np.nan
-    return round(100 * (s <= value).sum() / len(s), 1)
+    rank = 100 * ((pool < value).sum() + .5 * (pool == value).sum()) / len(pool)
+    return 100 - rank if lower else rank
 
 
-# label, dict key, format string, higher_is_better (for coloring deltas)
-BATTING_SHEET = [
-    ("G", "G", "{:.0f}", True), ("PA", "PA", "{:.0f}", True), ("AB", "AB", "{:.0f}", True),
-    ("AVG", "AVG", "{:.3f}", True), ("OBP", "OBP", "{:.3f}", True), ("SLG", "SLG", "{:.3f}", True),
-    ("OPS", "OPS", "{:.3f}", True), ("ISO", "ISO", "{:.3f}", True), ("BABIP", "BABIP", "{:.3f}", True),
-    ("wOBA", "wOBA", "{:.3f}", True), ("BB%", "BB_pct", "{:.1%}", True), ("K%", "K_pct", "{:.1%}", False),
-    ("SB%", "SB_pct", "{:.1%}", True), ("HR", "HR", "{:.0f}", True), ("RBI", "RBI", "{:.0f}", True),
-    ("R", "R", "{:.0f}", True), ("SB", "SB", "{:.0f}", True), ("CS", "CS", "{:.0f}", False),
-]
-PITCHING_SHEET = [
-    ("G", "G", "{:.0f}", True), ("GS", "GS", "{:.0f}", True), ("IP", "IP", "{:.1f}", True),
-    ("ERA", "ERA", "{:.2f}", False), ("WHIP", "WHIP", "{:.2f}", False), ("K/9", "K9", "{:.1f}", True),
-    ("BB/9", "BB9", "{:.1f}", False), ("HR/9", "HR9", "{:.2f}", False), ("K%", "K_pct", "{:.1%}", True),
-    ("BB%", "BB_pct", "{:.1%}", False), ("Strike%", "Strike_pct", "{:.1%}", True),
-    ("W", "W", "{:.0f}", True), ("L", "L", "{:.0f}", False), ("SV", "SV", "{:.0f}", True),
-    ("HLD", "HLD", "{:.0f}", True),
-]
-
-
-def stat_sheet(line: dict, lg_line: dict, kind: str) -> pd.DataFrame:
-    """Every computed metric, side by side with the season+level average -
-    the 'not just the headline averages' full detail table."""
-    spec = BATTING_SHEET if kind == "batting" else PITCHING_SHEET
+def rolling_rate(df, kind, window, metric=None):
+    metric = metric or ("OPS" if kind == "batting" else "ERA")
     rows = []
-    for label, key, fmt, _ in spec:
-        v, lv = line.get(key), lg_line.get(key)
-        rows.append({
-            "Metric": label,
-            "Value": fmt.format(v) if pd.notna(v) else "—",
-            "League Avg": fmt.format(lv) if pd.notna(lv) else "—",
-        })
+    # Never let a rolling window cross a season or level boundary.
+    for _, season in df.groupby(["season", "team_level"], sort=True):
+        season = season.sort_values(["game_date", "game_pk"]).reset_index(drop=True)
+        for i in range(len(season)):
+            sub = season.iloc[max(0, i - window + 1):i + 1]
+            rows.append({"game_date": season.iloc[i]["game_date"], "game_pk": season.iloc[i]["game_pk"],
+                         "value": line_for(sub, kind).get(metric, np.nan), "Games in window": len(sub),
+                         "metric": metric, "season": season.iloc[i]["season"]})
     return pd.DataFrame(rows)
 
 
-def radar_metrics(kind: str):
-    """(label, key, invert) tuples used to build the scouting-radar chart -
-    a compact 6-axis view of where a player ranks vs. the field."""
-    if kind == "batting":
-        return [("AVG", "AVG", False), ("OBP", "OBP", False), ("SLG", "SLG", False),
-                ("BB%", "BB_pct", False), ("K%", "K_pct", True), ("SB%", "SB_pct", False)]
-    return [("K/9", "K9", False), ("BB/9", "BB9", True), ("HR/9", "HR9", True),
-            ("WHIP", "WHIP", True), ("Strike%", "Strike_pct", False), ("K-BB%", None, False)]
+def split_table(df, kind, key):
+    rows = []
+    for value, sub in df.groupby(key, dropna=False, sort=True):
+        row = line_for(sub, kind)
+        row["Split"] = ("Unknown" if pd.isna(value) else ("Home" if value else "Away")) if key == "is_home" else str(value)
+        rows.append(row)
+    return pd.DataFrame(rows)
 
 
-# ---- trade simulator -----------------------------------------------------
+def game_results(batting, pitching):
+    cols = ["game_pk", "game_date", "team_id", "team_name", "opponent_name", "team_score", "opponent_score", "result"]
+    frames = [df.reindex(columns=cols) for df in (batting, pitching) if not df.empty]
+    if not frames:
+        return pd.DataFrame(columns=cols + ["Margin"])
+    games = pd.concat(frames).drop_duplicates(["game_pk", "team_id"]).sort_values(["game_date", "game_pk"])
+    games["Margin"] = games["team_score"] - games["opponent_score"]
+    return games
 
-def simulate_trade(df: pd.DataFrame, team_a: str, team_b: str, a_out: set, b_out: set) -> pd.DataFrame:
-    """Relabels which team each traded player's historical rows count toward.
-    This is a 'what if these two rosters had these players instead' swap of
-    real production, not a projection - the honest way to preview a trade
-    against games that have already been played."""
+
+def simulate_trade(df, team_a, team_b, a_out, b_out):
     out = df.copy()
-    sim = out["team_name"].copy()
-    mask_a = out["player_id"].isin(a_out) & (out["team_name"] == team_a)
-    mask_b = out["player_id"].isin(b_out) & (out["team_name"] == team_b)
-    sim = sim.mask(mask_a, team_b).mask(mask_b, team_a)
-    out["team_name_sim"] = sim
+    destination = out["team_id"].copy()
+    a_mask = out["team_id"].eq(team_a) & out["player_id"].isin(a_out)
+    b_mask = out["team_id"].eq(team_b) & out["player_id"].isin(b_out)
+    out["scenario_team_id"] = destination.mask(a_mask, team_b).mask(b_mask, team_a)
     return out
 
 
-def power_rating(wrc, fip) -> float:
-    """A simple, explainable 0-100 'squad rating' for a quick before/after
-    read on a trade - not a WAR-based projection, just a normalized blend
-    of offense (wRC+) and pitching (FIP)."""
-    off = np.nan if pd.isna(wrc) else np.clip((wrc - 40) / (160 - 40) * 100, 0, 100)
-    pit = np.nan if pd.isna(fip) else np.clip(100 - (fip - 2.5) / (6.0 - 2.5) * 100, 0, 100)
-    parts = [x for x in (off, pit) if pd.notna(x)]
-    return round(sum(parts) / len(parts), 1) if parts else np.nan
+def innings_text(outs):
+    if pd.isna(outs):
+        return "N/A"
+    return f"{int(outs) // 3}.{int(outs) % 3}"

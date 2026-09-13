@@ -1,93 +1,53 @@
-# MiLB Analyst Hub
+# MiLB Analyst Hub — redesigned Streamlit dashboard
 
-A three-page Streamlit app on top of [`rvlpw/milb-game-logs`](https://huggingface.co/datasets/rvlpw/milb-game-logs):
-a **Player Analyst Dashboard**, a **Team Analyst Dashboard**, and a **Trade Simulator**,
-with the sabermetric formulas MLB analysts actually use (wOBA, wRC+, OPS+, ISO, BABIP,
-FIP, K-BB%, etc.) computed game-by-game so growth/trend analysis is possible.
+An interactive workspace for scouts, coaches and player analysts, built around player game logs. The scanner and its daily backfill workflow are unchanged by this dashboard release.
 
-## Run it
+## Run locally
 
-```bash
-pip install -r requirements.txt
-streamlit run Home.py
+Use Python 3.11 or 3.12. From the repository root:
+
+```sh
+python -m pip install -r dashboard/requirements.txt
+python -m streamlit run dashboard/Home.py
 ```
 
-The dataset is public, so no Hugging Face token is needed. `.streamlit/config.toml`
-carries the dark theme — Streamlit picks it up automatically, nothing else to configure.
+The app opens with the included five real sample games. The coverage banner makes this explicit. For a full dataset, select **Hugging Face** in the sidebar and enter your dataset repository ID. The default repository is `rvlpw/milb-game-logs`. No Google Sheets connection is needed.
+
+For Streamlit Community Cloud, select `dashboard/Home.py` as the entrypoint. Install `dashboard/requirements.txt`. Use the repository's light `.streamlit/config.toml`. Private datasets require a read token in Streamlit secrets:
+
+```toml
+HF_TOKEN = "your-read-token"
+```
+
+Keep secrets out of Git. You can also configure environment variables `HF_TOKEN`, `HF_REPO_ID`, and `DASHBOARD_SOURCE=hub`. Local dataset mode expects a folder containing `data/season-YYYY/league-ID/team-ID/{batting,pitching}.parquet`. Hugging Face mode also requires the scanner's `catalog.json`.
 
 ## Pages
 
-- **Home.py** — dataset overview + a quick top-performers snapshot.
-- **pages/1_Player_Dashboard.py** — sidebar filters (season, level, team,
-  position/role, then age + live MLB/MiLB status once the pool is small
-  enough to check), a scouting radar chart, a full stat sheet (exportable to
-  CSV), four growth tabs (rolling form / month-by-month / season-over-season
-  / home-away), a per-game distribution histogram, and a **head-to-head
-  player comparison** toggle that overlays a second player on the radar and
-  stat sheet.
-- **pages/2_Team_Dashboard.py** — team offense/pitching lines with a
-  **Squad Rating** (0-100, blend of wRC+ and FIP), a **positional need
-  finder** (team wRC+ by position vs. league average + a PA-share pie), and
-  a rotation-vs-bullpen comparison with an IP-vs-FIP bubble chart. Every
-  roster table shows live age/status and exports to CSV.
-- **pages/3_Trade_Simulator.py** — pick two teams, pick who each side sends
-  away, and see the roster impact instantly: Squad Rating before/after,
-  offense/pitching lines before/after, and a positional wRC+ before/after
-  chart for both clubs. See "How the trade simulator works" below.
+- **Overview:** league performance landscape, opportunity filters, sortable leaderboards, coverage and downloads.
+- **Player lab:** searchable player IDs, team and position/role filters, rolling performance, same-league percentiles, individual game inspection, month/home-away/team splits, player comparisons, full metrics and a downloadable report with notes.
+- **Team room:** observed results and run margins, a positional batting map, historical roster production, starting/relief pitching splits and all team metrics.
+- **Roster scenarios:** two-way reassignment of recorded player production, showing before/after rates and opportunity totals. This is a historical replay, not a player valuation or a forecast.
+- **Metric guide:** plain-language definitions, formulas, direction of interpretation, source columns and a per-column completeness audit.
 
-## Files
+All pages share season, level, league and date filters. A team/player selection does not shrink the league benchmark. Hugging Face reads are pinned to the catalog revision and only the selected league's batting and pitching files are downloaded. Refresh clears cached source data; switching filters does not require loading every season.
 
-| File | Purpose |
-| --- | --- |
-| `data_loader.py` | Pulls the two HF configs (`batting`, `pitching`), dtype cleanup, position-group + SP/RP tagging |
-| `metrics.py` | All sabermetric formulas, league benchmarks, percentile ranks, splits, the stat-sheet builder, `simulate_trade()`, and `power_rating()` |
-| `bio.py` | Live player status (active in MLB / back in MiLB / injured / released / retired) from the MLB Stats API, disk-cached |
-| `assets.py` | Player headshot / team logo `<img>` helpers (MLB Stats API IDs → `midfield.mlbstatic.com`, with an SVG fallback) |
-| `ui.py` | The design system — theme CSS, hero banners, stat cards, section headers, scrollable tables, CSV download button |
-| `.streamlit/config.toml` | Dark navy + orange theme |
-| `Home.py`, `pages/*.py` | The three pages |
+## Metric integrity
 
-## How the trade simulator works
+The dashboard retains all 38 batting and 54 pitching source fields from the original scraper's metric mapping. It recovers mapped values from `raw_stats_json` where available, preserves additional source columns, and exposes raw rows for download. Unavailable fields remain visible as N/A; the dashboard cannot recreate observations absent from both the columns and raw source JSON.
 
-There's no way to project future performance from a box-score dataset, so
-the simulator does the honest thing instead: for the players changing
-teams, it **relabels which roster their actual games this season count
-toward**, then recomputes every downstream metric (wRC+, FIP, Squad Rating,
-positional need) from that relabeled data. It answers *"what would each
-team's stat line look like if this production had belonged to the other
-roster all along"* — a real, defensible before/after comparison — not a
-prediction of what either player will do next. It also doesn't model
-roster rules, service time, or salary/prospect capital a real front office
-would have to weigh.
+Rates are computed from summed counts, not averages of game percentages. Missing inputs make the affected aggregate unavailable, including partially missing counts. Pitching rates use recorded outs; 5.2 innings means 17 outs. Game results are deduplicated by game and team. Player selection and scenarios use IDs, not name matching.
 
-## Mobile use
+Percentiles require at least five players with valid values and use midranks for ties. Minimum PA/IP controls help users inspect sample size; no percentile is presented as a scouting grade. Trend windows display the actual number of available appearances and do not cross season/level boundaries.
 
-All filters live in the sidebar, which Streamlit renders with a built-in
-collapse/expand chevron at its top edge — tap it to get the sidebar out of
-the way on a phone. The custom roster tables (the ones with inline player
-photos) scroll sideways instead of squashing, and stat cards drop to a
-2-column grid under ~900px.
+wOBA uses fixed illustrative weights. Estimated wRC, OPS index and FIP are explicitly labeled estimates, benchmarked to loaded data, without park adjustment. They are not official FanGraphs season metrics. Consult the in-app guide for formulas. The positional map measures batting production at listed positions; it is not a defensive skill assessment. Current bio lookup is optional and separate from historical game data; unknown activity status is never guessed to be a release.
 
-## Live player status
+## Validation
 
-Because `player_id` is a real MLB Stats API person ID, the app can ask
-`statsapi.mlb.com` directly whether a player is currently on an MLB roster,
-back in the minors, hurt, released, or retired — something the game-log
-dataset itself has no way to encode. Results are cached to `cache/bios.json`
-for 3 days, and a small player pool (a team roster, or a filtered search
-result under ~300 players) is fetched concurrently. A very broad, unfiltered
-player search skips status/age filtering rather than firing hundreds of
-requests at once — narrow the season/level/team/position first.
+```sh
+python -m pip install pytest
+python -m pytest dashboard/tests -q
+```
 
-## Methodology notes
+The dashboard suite covers weighted rates, missingness, pitching arithmetic, complete field recovery, percentile ties, conservative status, unique game counts, scenario conservation, all five page renders and interactive pitching/scenario flows. Existing root-level scraper tests are outside this dashboard suite.
 
-- **wOBA** uses fixed linear weights (FanGraphs-style). **wRC+, OPS+, the
-  FIP constant, and Squad Rating** are centered on this dataset's own
-  season+level averages, not imported MLB numbers — "100" always means
-  "average at that level, that year."
-- **No park factors** — none are available in the source data.
-- **No birthdate field in the dataset** — age comes from the live MLB Stats
-  API bio lookup, not the game logs themselves.
-- **Starter/reliever role** is inferred per appearance from `pitching_GS`.
-- Missing source stats stay `null` upstream and are excluded from sums,
-  per the dataset's own documentation.
+Design uses native Streamlit navigation and accessible controls, a light neutral/green palette, responsive metric strips, interactive Plotly charts and chart PNG downloads. CSV exports retain underlying metrics; they do not replace Hugging Face storage.

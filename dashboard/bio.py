@@ -55,11 +55,11 @@ def _bucket(active: bool, sport_id, roster_status: str) -> str:
         return "Retired"
     if active and sport_id == 1:
         return "Active – MLB"
-    if active and sport_id:
+    if active and sport_id in {11, 12, 13, 14, 16}:
         return "Active – MiLB"
-    if active:
-        return "Active – MLB" if roster_status == "Active" else "Other / Unknown"
-    return "Free Agent / Released"
+    if "free agent" in rs or "released" in rs:
+        return "Free Agent / Released"
+    return "Other / Unknown"
 
 
 def _fetch_one(player_id: int) -> dict:

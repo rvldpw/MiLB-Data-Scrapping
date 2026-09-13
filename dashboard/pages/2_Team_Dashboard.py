@@ -1,300 +1,145 @@
-import sys
-from pathlib import Path
-
-sys.path.append(str(Path(__file__).resolve().parents[1]))
-
 import numpy as np
 import pandas as pd
-import plotly.express as px
+import plotly.graph_objects as go
 import streamlit as st
 
-import bio
-from assets import player_photo_html, team_logo_html
-from data_loader import LEVEL_LABEL, POSITION_ORDER, load_data
-from metrics import (batting_line, fip, league_batting_context, league_pitching_context,
-                      ops_plus, pitching_line, power_rating, stat_sheet, wrc_plus)
-from ui import BAD, GOOD, download_button, hero, inject_mobile_css, scrollable_table, section, stat_cards
+from dashboard import charts, bio, news
+from dashboard.assets import player_photo_url, team_logo_html, team_logo_url
+from dashboard.context import context_note
+from dashboard.data_loader import POSITION_ORDER
+from dashboard.metrics import line_for, enriched_line, player_table, game_results, split_table
+from dashboard.ui import hero, identity, section, stat_cards, chart, brief, fmt, download_button, stat_sheet, news_list, ACCENT, BAD, MUTED, LINE
 
-st.set_page_config(page_title="Team Analyst Dashboard", page_icon="🏟️", layout="wide", initial_sidebar_state="expanded")
-inject_mobile_css()
-hero("🏟️", "Team Analyst Dashboard", "Roster strength, positional needs, and staff balance for any club/season/level.")
-
-batting, pitching = load_data()
-
-# --- sidebar: pick season / level / team --------------------------------------
-st.sidebar.header("Filters")
-season = st.sidebar.selectbox("Season", sorted(batting["season"].unique(), reverse=True))
-level = st.sidebar.selectbox("Level", ["AA", "A+", "A"], format_func=lambda x: f"{x} — {LEVEL_LABEL.get(x, x)}")
-bpool = batting[(batting["season"] == season) & (batting["team_level"] == level)]
-ppool = pitching[(pitching["season"] == season) & (pitching["team_level"] == level)]
-team_names = sorted(bpool["team_name"].unique())
-if not team_names:
-    st.warning("No teams at that season/level.")
+ctx = st.session_state["_context"]
+hero("Team room", "See the roster as a whole.", "Connect the team's results with the players, positions and appearances behind them.")
+context_note(ctx)
+both = pd.concat([ctx.batting, ctx.pitching], ignore_index=True)
+teams = dict(both[["team_id", "team_name"]].drop_duplicates("team_id").itertuples(index=False, name=None))
+if not teams:
+    st.info("No teams have games in this date range.")
     st.stop()
-team_name = st.sidebar.selectbox("Team", team_names)
-
-bteam = bpool[bpool["team_name"] == team_name]
-pteam = ppool[ppool["team_name"] == team_name]
-team_id = bteam["team_id"].iloc[0] if len(bteam) else pteam["team_id"].iloc[0]
-
-roster_ids = pd.concat([bteam["player_id"], pteam["player_id"]]).unique().tolist()
-with st.sidebar:
-    with st.spinner(f"Checking live status for {len(roster_ids)} roster players..."):
-        roster_bios = bio.get_bios(roster_ids)
-
-st.sidebar.subheader("Roster table filters")
-status_opts = sorted(roster_bios["status"].dropna().unique(), key=lambda s: bio.STATUS_ORDER.index(s) if s in bio.STATUS_ORDER else 99) if not roster_bios.empty else []
-sel_status = st.sidebar.multiselect("Status (roster tables below)", status_opts, default=status_opts) if status_opts else []
-age_vals = roster_bios["age"].dropna() if not roster_bios.empty else pd.Series(dtype=float)
-sel_age = None
-if len(age_vals) and age_vals.min() < age_vals.max():
-    sel_age = st.sidebar.slider("Age (roster tables below)", int(age_vals.min()), int(age_vals.max()),
-                                 (int(age_vals.min()), int(age_vals.max())))
-
-
-def _apply_roster_filters(ids):
-    if roster_bios.empty:
-        return ids
-    b = roster_bios.set_index("player_id")
-    out = []
-    for pid in ids:
-        row = b.loc[pid] if pid in b.index else None
-        if row is None:
-            out.append(pid); continue
-        if sel_status and pd.notna(row.get("status")) and row["status"] not in sel_status:
-            continue
-        if sel_age and pd.notna(row.get("age")) and not (sel_age[0] <= row["age"] <= sel_age[1]):
-            continue
-        out.append(pid)
-    return out
-
-
-def _bio_cell(pid):
-    if roster_bios.empty or pid not in roster_bios["player_id"].values:
-        return "", ""
-    row = roster_bios[roster_bios["player_id"] == pid].iloc[0]
-    age_txt = f"{int(row['age'])}" if pd.notna(row["age"]) else "—"
-    return age_txt, bio.status_badge_html(row.get("status", "Other / Unknown"))
-
-
-# --- header + record ---------------------------------------------------------
-games = pd.concat([bteam[["game_pk", "game_date", "win", "team_score", "opponent_score"]],
-                    pteam[["game_pk", "game_date", "win", "team_score", "opponent_score"]]]).drop_duplicates("game_pk")
-games = games.sort_values("game_date")
-wins, losses = int(games["win"].sum()), int((games["win"] == 0).sum())
-
-lg_bat_ctx = league_batting_context(bpool).iloc[0].to_dict()
-lg_pit_ctx = league_pitching_context(ppool).iloc[0].to_dict()
-team_bat_line = batting_line(bteam)
-team_pit_line = pitching_line(pteam)
-team_wrc = wrc_plus(team_bat_line, lg_bat_ctx)
-team_ops_plus = ops_plus(team_bat_line, lg_bat_ctx)
-team_fip = fip(team_pit_line, lg_pit_ctx)
-rating = power_rating(team_wrc, team_fip)
-
-st.markdown(
-    f"<div class='player-card'>{team_logo_html(team_id, 84)}"
-    f"<div><p class='player-name'>{team_name}</p>"
-    f"<div class='player-meta'>{season} {LEVEL_LABEL.get(level, level)} · Record <b>{wins}-{losses}</b> "
-    f"({100*wins/max(wins+losses,1):.1f}% win rate) · Games on file <b>{len(games)}</b> · "
-    f"<span class='pill' style='background:{'#22c55e22' if pd.notna(rating) and rating>=55 else '#ef444422'};"
-    f"color:{GOOD if pd.notna(rating) and rating>=55 else BAD};border:1px solid {GOOD if pd.notna(rating) and rating>=55 else BAD}'>"
-    f"Squad Rating {rating:.0f}/100</span></div></div></div>" if pd.notna(rating) else "",
-    unsafe_allow_html=True,
-)
-
-if len(games) > 1:
-    games["cum_win_pct"] = games["win"].expanding().mean()
-    fig = px.line(games, x="game_date", y="cum_win_pct", title="Cumulative win% over the season",
-                  color_discrete_sequence=["#f97316"])
-    fig.add_hline(y=0.5, line_dash="dot", opacity=0.5)
-    fig.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font_color="#e5e9f0")
-    st.plotly_chart(fig, use_container_width=True)
-
-st.divider()
-
-oc, pc = st.columns(2)
-with oc:
-    section("⚾", "Offense")
-    stat_cards([
-        {"label": "AVG/OBP/SLG", "value": f"{team_bat_line['AVG']:.3f}/{team_bat_line['OBP']:.3f}/{team_bat_line['SLG']:.3f}"},
-        {"label": "wRC+", "value": f"{team_wrc:.0f}" if pd.notna(team_wrc) else "—",
-         "sub": f"{team_wrc-100:+.0f} vs lg avg" if pd.notna(team_wrc) else None,
-         "sub_color": GOOD if pd.notna(team_wrc) and team_wrc >= 100 else BAD},
-    ], cols=2)
-    stat_cards([
-        {"label": "OPS+", "value": f"{team_ops_plus:.0f}" if pd.notna(team_ops_plus) else "—"},
-        {"label": "BB% / K%", "value": f"{100*team_bat_line['BB_pct']:.1f}% / {100*team_bat_line['K_pct']:.1f}%"},
-    ], cols=2)
-    with st.expander("Full offense stat sheet"):
-        sheet = stat_sheet(team_bat_line, lg_bat_ctx, "batting")
-        st.dataframe(sheet, hide_index=True, use_container_width=True)
-        download_button(sheet, f"{team_name.replace(' ', '_')}_offense_stat_sheet.csv")
-with pc:
-    section("🥎", "Pitching")
-    stat_cards([
-        {"label": "ERA", "value": f"{team_pit_line['ERA']:.2f}" if pd.notna(team_pit_line["ERA"]) else "—"},
-        {"label": "FIP", "value": f"{team_fip:.2f}" if pd.notna(team_fip) else "—",
-         "sub": f"{lg_pit_ctx['ERA']-team_fip:+.2f} vs lg ERA" if pd.notna(team_fip) else None,
-         "sub_color": GOOD if pd.notna(team_fip) and team_fip <= lg_pit_ctx["ERA"] else BAD},
-    ], cols=2)
-    stat_cards([
-        {"label": "WHIP", "value": f"{team_pit_line['WHIP']:.2f}" if pd.notna(team_pit_line["WHIP"]) else "—"},
-        {"label": "K-BB%", "value": f"{100*(team_pit_line['K_pct']-team_pit_line['BB_pct']):.1f}%"},
-    ], cols=2)
-    with st.expander("Full pitching stat sheet"):
-        sheet = stat_sheet(team_pit_line, lg_pit_ctx, "pitching")
-        st.dataframe(sheet, hide_index=True, use_container_width=True)
-        download_button(sheet, f"{team_name.replace(' ', '_')}_pitching_stat_sheet.csv")
-
-st.divider()
-
-# --- positional need finder --------------------------------------------------
-section("🧭", "Positional need finder",
-        "Team wRC+ at each position, benchmarked against every other team at the same level/season. "
-        "Bars below 100 are the roster's soft spots.")
-
-lg_pos_ctx = league_batting_context(bpool, keys=("team_level", "pos_group"))
-pos_rows = []
-for pos in POSITION_ORDER:
-    sub = bteam[bteam["pos_group"] == pos]
-    if sub.empty:
-        continue
-    line = batting_line(sub)
-    lg_row = lg_pos_ctx[lg_pos_ctx["pos_group"] == pos]
-    if lg_row.empty or not line["PA"]:
-        continue
-    wrc = wrc_plus(line, lg_row.iloc[0].to_dict())
-    pos_rows.append(dict(Position=pos, PA=int(line["PA"]), **{"wRC+": wrc}))
-pos_df = pd.DataFrame(pos_rows)
-
-if pos_df.empty:
-    st.info("Not enough plate appearances by position for this team yet.")
-else:
-    pos_df["Need"] = np.where(pos_df["wRC+"] < 90, "Needs improvement",
-                        np.where(pos_df["wRC+"] < 100, "Below average", "Strength"))
-    color_map = {"Needs improvement": BAD, "Below average": "#f59e0b", "Strength": GOOD}
-
-    chart_col, pie_col = st.columns([2, 1])
-    with chart_col:
-        fig = px.bar(pos_df, x="Position", y="wRC+", color="Need", color_discrete_map=color_map,
-                     category_orders={"Position": POSITION_ORDER}, text="wRC+")
-        fig.add_hline(y=100, line_dash="dot", annotation_text="league avg (100)")
-        fig.update_traces(texttemplate="%{text:.0f}", textposition="outside")
-        fig.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font_color="#e5e9f0")
-        st.plotly_chart(fig, use_container_width=True)
-    with pie_col:
-        fig2 = px.pie(pos_df, names="Position", values="PA", title="Share of team PA by position", hole=0.45,
-                      color_discrete_sequence=px.colors.sequential.Oranges_r)
-        fig2.update_layout(paper_bgcolor="rgba(0,0,0,0)", font_color="#e5e9f0")
-        st.plotly_chart(fig2, use_container_width=True)
-
-    weak_spots = pos_df[pos_df["wRC+"] < 100].sort_values("wRC+")
-    if weak_spots.empty:
-        st.success("Every position is producing at or above league average — no clear hole on this roster.")
-    else:
-        pick = st.selectbox("See who's driving the number at a position", weak_spots["Position"].tolist())
-        roster_at_pos = bteam[bteam["pos_group"] == pick]
-        lg_row = lg_pos_ctx[lg_pos_ctx["pos_group"] == pick].iloc[0].to_dict()
-        impact_rows = []
-        for pid, sub in roster_at_pos.groupby("player_id"):
-            if pid not in _apply_roster_filters([pid]):
-                continue
-            line = batting_line(sub)
-            if not line["PA"]:
-                continue
-            age_txt, status_html = _bio_cell(pid)
-            impact_rows.append(dict(
-                player_id=pid, Player=sub["player_full_name"].iloc[-1], age=age_txt, status=status_html,
-                PA=int(line["PA"]), AVG=round(line["AVG"], 3) if pd.notna(line["AVG"]) else None,
-                OPS=round(line["OPS"], 3) if pd.notna(line["OPS"]) else None,
-                wrc=wrc_plus(line, lg_row),
-            ))
-        impact_df = pd.DataFrame(impact_rows).sort_values("PA", ascending=False)
-        if impact_df.empty:
-            st.info("No players at this position pass the roster filters in the sidebar.")
+tid = st.selectbox("Choose a team", sorted(teams, key=teams.get), format_func=teams.get, key="team_pick")
+bteam = ctx.batting[ctx.batting["team_id"].eq(tid)]
+pteam = ctx.pitching[ctx.pitching["team_id"].eq(tid)]
+games = game_results(bteam, pteam)
+bc, pc = line_for(ctx.batting, "batting"), line_for(ctx.pitching, "pitching")
+bl, pl = enriched_line(bteam, "batting", bc), enriched_line(pteam, "pitching", pc)
+wins, losses, ties = (int(games["result"].eq(v).sum()) for v in ("W", "L", "T"))
+margin = games["Margin"].sum(min_count=len(games))
+identity(teams[tid], f"{ctx.description} · {len(games)} downloaded games", f"{wins}–{losses}", team_logo_html(tid, 72))
+stat_cards([
+    {"label": "Observed record", "value": f"{wins}–{losses}", "sub": f"{ties} ties · not the official season record"},
+    {"label": "Run differential", "value": f"{margin:+.0f}" if pd.notna(margin) else "N/A", "sub": "Runs scored minus runs allowed"},
+    {"label": "Team OPS", "value": fmt(bl['OPS'], 'OPS'), "sub": f"Loaded cohort {fmt(bc['OPS'],'OPS')}"},
+    {"label": "Staff ERA", "value": fmt(pl['ERA'], 'ERA'), "sub": f"Loaded cohort {fmt(pc['ERA'],'ERA')}"},
+])
+tabs = st.tabs(["Team picture", "Roster", "Pitching staff", "Game results", "News", "All team metrics"])
+with tabs[0]:
+    a, b = st.columns([1.25, 1], gap="large")
+    with a:
+        section("", "Offense around the field", "OPS by recorded position. This measures batting production, not defensive quality or roster depth.")
+        positions = []
+        for pos in POSITION_ORDER:
+            team_pos = bteam[bteam["pos_group"].eq(pos)] if not bteam.empty else bteam
+            peer_pos = ctx.batting[ctx.batting["pos_group"].eq(pos)]
+            team_line, peer_line = line_for(team_pos, "batting"), line_for(peer_pos, "batting")
+            positions.append({"Position": pos, "PA": team_line["PA"], "OPS": team_line["OPS"], "Cohort OPS": peer_line["OPS"], "Gap": team_line["OPS"] - peer_line["OPS"]})
+        positional = pd.DataFrame(positions)
+        locations = {"C": (0, -13), "1B": (45, 40), "2B": (25, 82), "SS": (-25, 82), "3B": (-45, 40), "OF": (0, 125), "DH": (82, 10), "UT": (-82, 10)}
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=[0, 48, 0, -48, 0], y=[0,48,96,48,0], fill="toself", fillcolor="#e7eee4", line=dict(color="#c7d8c8",width=2), mode="lines", hoverinfo="skip", showlegend=False))
+        for _, row in positional.iterrows():
+            x, y = locations[row["Position"]]
+            color = ACCENT if pd.notna(row["Gap"]) and row["Gap"] >= 0 else BAD if pd.notna(row["Gap"]) else MUTED
+            fig.add_trace(go.Scatter(x=[x],y=[y],mode="markers+text",marker=dict(size=56,color="#ffffff",line=dict(color=color,width=2)),
+                                     text=[row["Position"]],textposition="middle center",textfont=dict(color=color,size=13), showlegend=False,
+                                     hovertemplate=f"{row['Position']}<br>OPS {fmt(row['OPS'],'OPS')}<br>{fmt(row['PA'],'PA')} PA<br>Cohort OPS {fmt(row['Cohort OPS'],'OPS')}<extra></extra>"))
+            fig.add_annotation(x=x,y=y-19,text=fmt(row["OPS"],"OPS"),showarrow=False,font=dict(size=12,color=color))
+        charts.style(fig, 390)
+        fig.update_xaxes(visible=False,range=[-120,120],fixedrange=True)
+        fig.update_yaxes(visible=False,range=[-48,157],fixedrange=True)
+        chart(fig,"team_field")
+        st.caption("Green: at/above the position's cohort OPS. Rust: below. Gray: unavailable. Position is the box-score label, not innings spent defending there.")
+    with b:
+        section("", "Where to look next", "Start with evidence, then check the size and quality of the sample.")
+        qualified = positional[positional["PA"].ge(50) & positional["Gap"].notna()]
+        if qualified.empty:
+            brief("More context before a roster verdict", "No position has 50 recorded plate appearances in this selection. The field view shows the results, but the sample does not support calling a position a strength or a roster need.")
         else:
-            rows_html = "".join(
-                f"<tr><td>{player_photo_html(r.player_id, 40)}</td><td>{r.Player}</td><td>{r.age}</td>"
-                f"<td>{r.status}</td><td>{r.PA}</td><td>{r.AVG}</td><td>{r.OPS}</td>"
-                f"<td style='color:{BAD if pd.notna(r.wrc) and r.wrc < 100 else GOOD};font-weight:700'>{r.wrc:.0f}</td></tr>"
-                for r in impact_df.itertuples(index=False)
-            )
-            st.markdown(scrollable_table("<th></th><th>Player</th><th>Age</th><th>Status</th><th>PA</th><th>AVG</th><th>OPS</th><th>wRC+</th>", rows_html),
-                        unsafe_allow_html=True)
-        st.caption(f"Most-used player at {pick} carries the sample; a low wRC+ next to a high PA count is the real drag on the position.")
+            weakest = qualified.sort_values("Gap").iloc[0]
+            brief(f"Review the {weakest['Position']} production", f"OPS is {fmt(weakest['OPS'],'OPS')} across {fmt(weakest['PA'],'PA')} PA, versus {fmt(weakest['Cohort OPS'],'OPS')} for the loaded position cohort. Check the players and matchups behind the gap.")
+        brief("Keep run prevention separate", f"The staff has a {fmt(pl['ERA'],'ERA')} ERA and a {fmt(pl['K_BB_pct'],'K_BB_pct')} strikeout-minus-walk rate. Use the staff tab to separate starting and relief appearances.")
+        brief("Use the roster as an index", "Sort the roster by opportunities first. Open a player report to inspect the individual games before forming a conclusion.")
+    st.dataframe(positional.rename(columns={"Gap":"OPS gap"}).round(3),hide_index=True,width="stretch")
 
-st.divider()
-
-# --- rotation vs bullpen strength ---------------------------------------------
-section("🔁", "Rotation vs. bullpen strength", "Starters and relievers benchmarked separately, since their run environments differ.")
-
-role_rows = []
-for role in ["SP", "RP"]:
-    sub = pteam[pteam["role"] == role]
-    if sub.empty:
-        continue
-    line = pitching_line(sub)
-    lg_role = league_pitching_context(ppool[ppool["role"] == role])
-    lg_role = lg_role.iloc[0].to_dict() if len(lg_role) else lg_pit_ctx
-    role_rows.append(dict(Role="Rotation" if role == "SP" else "Bullpen", IP=round(line["IP"], 1),
-                           ERA=round(line["ERA"], 2) if pd.notna(line["ERA"]) else None,
-                           FIP=fip(line, lg_role), **{"lg avg FIP": round(lg_role.get("ERA", np.nan), 2)}))
-role_df = pd.DataFrame(role_rows)
-if not role_df.empty:
-    st.dataframe(role_df, hide_index=True, use_container_width=True)
-
-    bubble_rows = []
-    for role_code, role_label in [("SP", "Rotation"), ("RP", "Bullpen")]:
-        sub_role = pteam[pteam["role"] == role_code]
-        lg_role_ctx = league_pitching_context(ppool[ppool["role"] == role_code])
-        lg_role_ctx = lg_role_ctx.iloc[0].to_dict() if len(lg_role_ctx) else lg_pit_ctx
-        for pid, sub in sub_role.groupby("player_id"):
-            ln = pitching_line(sub)
-            if not ln["IP"]:
-                continue
-            bubble_rows.append(dict(Player=sub["player_full_name"].iloc[-1], Role=role_label,
-                                     IP=ln["IP"], FIP=fip(ln, lg_role_ctx), G=ln["G"]))
-    bubble_df = pd.DataFrame(bubble_rows)
-    if not bubble_df.empty:
-        fig = px.scatter(bubble_df, x="IP", y="FIP", size="G", color="Role", hover_name="Player",
-                          title="Every arm on the staff — IP vs. FIP (bubble size = appearances)",
-                          color_discrete_sequence=["#f97316", "#38bdf8"])
-        fig.add_hline(y=lg_pit_ctx.get("ERA", np.nan), line_dash="dot", annotation_text="league avg FIP≈ERA")
-        fig.update_yaxes(autorange="reversed")
-        fig.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font_color="#e5e9f0")
-        st.plotly_chart(fig, use_container_width=True)
-
-    weak_role = role_df.sort_values("FIP", ascending=False).iloc[0]
-    role_code = "SP" if weak_role["Role"] == "Rotation" else "RP"
-    st.markdown(f"**{weak_role['Role']} is the softer half of the staff by FIP.** Individual arms below:")
-    roster_role = pteam[pteam["role"] == role_code]
-    lg_role_ctx = league_pitching_context(ppool[ppool["role"] == role_code])
-    lg_role_ctx = lg_role_ctx.iloc[0].to_dict() if len(lg_role_ctx) else lg_pit_ctx
-    prows = []
-    for pid, sub in roster_role.groupby("player_id"):
-        if pid not in _apply_roster_filters([pid]):
-            continue
-        line = pitching_line(sub)
-        if not line["IP"]:
-            continue
-        age_txt, status_html = _bio_cell(pid)
-        prows.append(dict(player_id=pid, Player=sub["player_full_name"].iloc[-1], age=age_txt, status=status_html,
-                           IP=round(line["IP"], 1), ERA=round(line["ERA"], 2) if pd.notna(line["ERA"]) else None,
-                           FIP=fip(line, lg_role_ctx), kbb=round(100*(line["K_pct"]-line["BB_pct"]), 1)))
-    prows_df = pd.DataFrame(prows).sort_values("IP", ascending=False)
-    if prows_df.empty:
-        st.info("No pitchers in this role pass the roster filters in the sidebar.")
+with tabs[1]:
+    section("", "Who contributed", "Players who appeared for this team in the selected games — not a verified current roster.")
+    group = st.segmented_control("Roster group", ["Batters", "Pitchers"], default="Batters", key="team_roster_kind")
+    kind = "pitching" if group == "Pitchers" else "batting"
+    rows = player_table(pteam if kind == "pitching" else bteam, kind)
+    search = st.text_input("Search roster", key="team_roster_search", placeholder="Player name")
+    if rows.empty:
+        st.info("No appearances in this group.")
     else:
-        rows_html = "".join(
-            f"<tr><td>{player_photo_html(r.player_id, 40)}</td><td>{r.Player}</td><td>{r.age}</td>"
-            f"<td>{r.status}</td><td>{r.IP}</td><td>{r.ERA}</td>"
-            f"<td style='color:{BAD if pd.notna(r.FIP) and r.FIP > lg_role_ctx.get('ERA', 4) else GOOD};font-weight:700'>{r.FIP}</td><td>{r.kbb}</td></tr>"
-            for r in prows_df.itertuples(index=False)
-        )
-        st.markdown(scrollable_table("<th></th><th>Player</th><th>Age</th><th>Status</th><th>IP</th><th>ERA</th><th>FIP</th><th>K-BB%</th>", rows_html),
-                    unsafe_allow_html=True)
-else:
-    st.info("No pitching innings logged for this team in the selection.")
+        if search:
+            rows = rows[rows["Player"].str.contains(search,case=False,regex=False)]
+        status_key = f"roster_bio_{tid}_{kind}"
+        bcol, _ = st.columns([2, 3])
+        with bcol:
+            if st.button(f"Check live status for these {len(rows)} players", key=f"roster_status_{tid}_{kind}"):
+                with st.spinner("Checking the MLB player record for each roster spot…"):
+                    st.session_state[status_key] = bio.get_bios(rows["player_id"].tolist())
+        cols = ["player_id","Player","Position","G","PA","AVG","OBP","SLG","OPS","HR","BB_pct","K_pct"] if kind == "batting" else ["player_id","Player","Role","G","GS","IP","ERA","WHIP","K9","BB9","K_BB_pct"]
+        shown=rows.reindex(columns=cols).copy()
+        shown.insert(0, "Photo", shown["player_id"].map(player_photo_url))
+        if status_key in st.session_state:
+            statuses = st.session_state[status_key][["player_id", "age", "status"]].rename(columns={"age": "Age", "status": "Status"})
+            shown = shown.merge(statuses, on="player_id", how="left")
+        for key in shown:
+            if key not in ("Player","Position","Role","Photo","player_id","Status"):
+                shown[key]=shown[key].map(lambda v,k=key:fmt(v,k))
+        shown_cols = [c for c in shown.columns if c != "player_id"]
+        st.dataframe(shown,hide_index=True,width="stretch",height=400, column_order=shown_cols,
+                     column_config={"Photo": st.column_config.ImageColumn("")})
+        st.caption("Status is a live MLB Stats API lookup (Active – MLB, Active – MiLB / still developing, Injured List, Free agent / released, Retired) — separate from the game logs above.")
+        download_button(rows,f"team_{tid}_{kind}_roster.csv","Download roster metrics","team_roster_export")
 
-st.caption("Age and status columns come from a live MLB Stats API lookup on each player's real MLB ID, cached locally.")
+with tabs[2]:
+    section("", "Starting and relief appearances", "Roles describe the individual appearance. A pitcher can contribute to both groups.")
+    if pteam.empty:
+        st.info("No pitching appearances are available.")
+    else:
+        roles=split_table(pteam,"pitching","role")
+        chart(charts.split_bars(roles,"ERA"),"staff_roles")
+        shown=roles[["Split","G","GS","IP","ERA","WHIP","K9","BB9","K_BB_pct"]].copy()
+        shown["IP"]=shown["IP"].map(lambda v:fmt(v,"IP"))
+        st.dataframe(shown,hide_index=True,width="stretch")
+        brief("A workload question", "Review pitches and innings alongside the role. Box-score workload is descriptive; it cannot diagnose fatigue or establish a safe pitching limit.")
+
+with tabs[3]:
+    section("", "One result per team game", "Scores are deduplicated so a game is never counted once per player.")
+    fig=go.Figure(go.Bar(x=games["game_date"].dt.strftime("%d %b")+" · "+games["game_pk"].astype(str), y=games["Margin"],
+                        marker_color=[ACCENT if x>=0 else BAD for x in games["Margin"].fillna(0)],
+                        hovertemplate="%{x}<br>Run differential: %{y:+}<extra></extra>"))
+    fig.add_hline(y=0,line_color=MUTED)
+    fig.update_yaxes(title="Runs scored − runs allowed")
+    chart(charts.style(fig,330),"team_results")
+    st.dataframe(games,hide_index=True,width="stretch")
+    download_button(games,f"team_{tid}_results.csv","Download game results","team_results_export")
+
+with tabs[4]:
+    section("", "Recent coverage", f"News search for \"{teams[tid]}\", via Google News — indexes ESPN, SB Nation, MiLB.com and local beat writers, not one site.")
+    if st.button("Load recent news", key=f"team_news_{tid}"):
+        with st.spinner("Searching for recent coverage…"):
+            st.session_state[f"team_news_result_{tid}"] = news.fetch_news(f"{teams[tid]} baseball")
+    if f"team_news_result_{tid}" in st.session_state:
+        news_list(st.session_state[f"team_news_result_{tid}"])
+    else:
+        st.caption("Not loaded yet — click above.")
+
+with tabs[5]:
+    for title, line, context, kind in (("Batting",bl,bc,"batting"),("Pitching",pl,pc,"pitching")):
+        section("",title,"Rates use aggregate counts; unavailable fields remain visible.")
+        sheet=stat_sheet(line,context,kind)
+        st.dataframe(sheet,hide_index=True,width="stretch",height=330)
+        download_button(sheet,f"team_{tid}_{kind}_metrics.csv",f"Download {kind} metric sheet",f"team_all_{kind}")

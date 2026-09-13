@@ -1,300 +1,161 @@
-import sys
-from pathlib import Path
-
-sys.path.append(str(Path(__file__).resolve().parents[1]))
-
-import numpy as np
 import pandas as pd
-import plotly.express as px
-import plotly.graph_objects as go
 import streamlit as st
 
-import bio
-from assets import player_photo_html, team_logo_html
-from data_loader import LEVEL_LABEL, load_data
-from metrics import (batting_line, fip, home_away_split, league_batting_context, league_pitching_context,
-                      monthly_split, ops_plus, percentile_rank, pitching_line, radar_metrics, rolling_rate,
-                      season_split, stat_sheet, wrc_plus)
-from ui import BAD, GOOD, download_button, hero, inject_mobile_css, section, stat_cards
+from dashboard import charts, bio, news
+from dashboard.assets import player_photo_html, player_photo_url
+from dashboard.context import context_note
+from dashboard.glossary import label
+from dashboard.metrics import line_for, enriched_line, player_table, rolling_rate, split_table
+from dashboard.ui import hero, section, identity, stat_cards, brief, chart, fmt, sample_note, metric_help, stat_sheet, download_button, news_list
 
-st.set_page_config(page_title="Player Analyst Dashboard", page_icon="🧢", layout="wide", initial_sidebar_state="expanded")
-inject_mobile_css()
-hero("🧢", "Player Analyst Dashboard", "Search, filter, and dig into any hitter or pitcher in the dataset.")
-
-batting, pitching = load_data()
-
-# ============================= sidebar filters ==============================
-st.sidebar.header("Filters")
-mode = st.sidebar.radio("Player type", ["Hitter", "Pitcher"], horizontal=True)
-src = batting if mode == "Hitter" else pitching
-kind = "batting" if mode == "Hitter" else "pitching"
-
-all_seasons = sorted(src["season"].unique())
-sel_seasons = st.sidebar.multiselect("Season(s)", all_seasons, default=all_seasons)
-sel_levels = st.sidebar.multiselect("Level", ["AA", "A+", "A"], default=["AA", "A+", "A"])
-
-pool = src[src["season"].isin(sel_seasons) & src["team_level"].isin(sel_levels)]
-
-team_options = ["All teams"] + sorted(pool["team_name"].unique())
-sel_team = st.sidebar.selectbox("Team", team_options)
-if sel_team != "All teams":
-    pool = pool[pool["team_name"] == sel_team]
-
-if kind == "batting":
-    pos_options = [p for p in ["C", "1B", "2B", "3B", "SS", "OF", "DH", "UT"] if p in pool["pos_group"].unique()]
-    sel_pos = st.sidebar.multiselect("Position", pos_options, default=pos_options)
-    pool = pool[pool["pos_group"].isin(sel_pos)] if sel_pos else pool
-else:
-    sel_role = st.sidebar.multiselect("Role", ["SP", "RP"], default=["SP", "RP"])
-    pool = pool[pool["role"].isin(sel_role)] if sel_role else pool
-
-candidates = pool[["player_id", "player_full_name"]].drop_duplicates()
-st.sidebar.caption(f"{len(candidates)} players match the filters above.")
-
-bios_df = pd.DataFrame()
-if 0 < len(candidates) <= 300:
-    with st.sidebar:
-        with st.spinner(f"Checking live MLB status for {len(candidates)} players..."):
-            bios_df = bio.get_bios(candidates["player_id"].tolist())
-    if not bios_df.empty:
-        merged = candidates.merge(bios_df, on="player_id", how="left")
-        age_vals = merged["age"].dropna()
-        if len(age_vals):
-            lo, hi = int(age_vals.min()), int(age_vals.max())
-            if lo < hi:
-                age_range = st.sidebar.slider("Age", lo, hi, (lo, hi))
-                merged = merged[merged["age"].between(*age_range) | merged["age"].isna()]
-        status_options = sorted(merged["status"].dropna().unique(), key=lambda s: bio.STATUS_ORDER.index(s) if s in bio.STATUS_ORDER else 99)
-        if status_options:
-            sel_status = st.sidebar.multiselect("MLB/MiLB status", status_options, default=status_options)
-            merged = merged[merged["status"].isin(sel_status) | merged["status"].isna()]
-        candidates = merged[["player_id", "player_full_name"]].drop_duplicates()
-elif len(candidates) > 300:
-    st.sidebar.info("Narrow the filters above (e.g. pick a team) to unlock age/status filtering.")
-
-if candidates.empty:
-    st.warning("No players match the current filters.")
+ctx = st.session_state["_context"]
+hero("Player lab", "From the box score to the bigger picture.", "Inspect performance, compare the right peers, and keep the sample size in view.")
+context_note(ctx)
+mode = st.segmented_control("Player group", ["Batting", "Pitching"], default="Batting", key="player_kind")
+kind = "pitching" if mode == "Pitching" else "batting"
+src = ctx.batting if kind == "batting" else ctx.pitching
+if src.empty:
+    st.info("No player appearances match this group and date range.")
     st.stop()
+controls = st.columns([1.4, 1, 1], gap="medium")
+team_labels = dict(src[["team_id", "team_name"]].drop_duplicates("team_id").itertuples(index=False, name=None))
+with controls[1]:
+    selected_team = st.selectbox("Team", [None, *sorted(team_labels, key=team_labels.get)], format_func=lambda t: "All teams" if t is None else team_labels[t], key=f"player_team_{kind}")
+pool = src if selected_team is None else src[src["team_id"].eq(selected_team)]
+with controls[2]:
+    filter_col = "pos_group" if kind == "batting" else "role"
+    options = sorted(pool[filter_col].dropna().unique())
+    position = st.selectbox("Position" if kind == "batting" else "Appearance role", ["All", *options], key=f"player_position_{kind}")
+    if position != "All":
+        pool = pool[pool[filter_col].eq(position)]
+if pool.empty:
+    st.info("No players match those filters. Choose another team or position.")
+    st.stop()
+people = pool.sort_values(["game_date", "game_pk"])[["player_id", "player_full_name"]].drop_duplicates("player_id", keep="last")
+names = dict(people.itertuples(index=False, name=None))
+with controls[0]:
+    pid = st.selectbox("Search player", sorted(names, key=names.get), format_func=lambda p: f"{names[p]} · ID {p}", key=f"player_pick_{kind}")
+pdf = pool[pool["player_id"].eq(pid)].copy()
+latest = pdf.iloc[-1]
+cohort = line_for(src, kind)
+line = enriched_line(pdf, kind, cohort)
+population = player_table(src, kind)
+player_bio = bio.get_bios([pid]).iloc[0].to_dict()
+identity(names[pid], f"{latest['team_name']} · {latest['player_position']} · {ctx.description}", f"{int(line['G']):02d} G",
+         player_photo_html(pid, 72), bio.status_badge_html(player_bio.get("status", "Other / Unknown")))
+st.caption("Status is a live MLB Stats API lookup, separate from the game logs — 'Active – MiLB' means still developing with a minor-league affiliate; 'Active – MLB' means on a major-league roster today.")
+sample_note(line, kind)
+headline = ["OPS", "OBP", "ISO", "K_pct"] if kind == "batting" else ["ERA", "WHIP", "K_BB_pct", "IP"]
+stat_cards([{"label": label(k), "value": fmt(line[k], k), "sub": (f"Cohort {fmt(cohort.get(k), k)}" if k != "IP" else "Baseball notation · .2 = two outs")} for k in headline])
+metric_help(headline, kind)
 
-names = candidates.sort_values("player_full_name")["player_full_name"].tolist()
-picked_name = st.sidebar.selectbox("Search player", names)
-player_id = candidates[candidates["player_full_name"] == picked_name]["player_id"].iloc[0]
-
-compare_on = st.sidebar.checkbox("🆚 Compare with another player")
-compare_name = None
-if compare_on:
-    other_names = [n for n in names if n != picked_name]
-    compare_name = st.sidebar.selectbox("Compare against", other_names) if other_names else None
-
-# ============================= helpers ==============================
-
-def load_player(pid, seasons):
-    all_df = src[src["player_id"] == pid].copy()
-    filt = all_df[all_df["season"].isin(seasons)]
-    return all_df, (filt if not filt.empty else all_df)
-
-
-def compute(pid, seasons):
-    pdf_all, pdf = load_player(pid, seasons)
-    latest = pdf.sort_values("game_date").iloc[-1]
-    lvl = latest["team_level"]
-    lg_ctx_df = (league_batting_context(batting[batting["team_level"] == lvl]) if kind == "batting"
-                 else league_pitching_context(pitching[pitching["team_level"] == lvl]))
-    line = batting_line(pdf) if kind == "batting" else pitching_line(pdf)
-    lg_row = lg_ctx_df[lg_ctx_df["season"] == pdf["season"].max()]
-    lg_line = lg_row.iloc[0].to_dict() if len(lg_row) else lg_ctx_df.iloc[-1].to_dict()
-    return pdf_all, pdf, latest, lvl, line, lg_line
-
-
-pdf_all, pdf, latest_row, level, line, lg_line = compute(player_id, sel_seasons)
-player_bio = bio.get_bios([player_id]).iloc[0].to_dict()
-
-# --- header card -----------------------------------------------------------
-age_txt = f"Age <b>{int(player_bio['age'])}</b> · " if pd.notna(player_bio.get("age")) else ""
-debut = player_bio.get("debut_date")
-debut_txt = f"MLB debut <b>{debut}</b>" if debut else "No MLB debut on record"
-cur_team_txt = f" · Currently with <b>{player_bio['current_team']}</b>" if player_bio.get("current_team") else ""
-st.markdown(
-    f"<div class='player-card'>{player_photo_html(player_id, size=104)}"
-    f"<div><p class='player-name'>{picked_name}</p>"
-    f"<div class='player-meta'>{team_logo_html(latest_row['team_id'], 22)} <b>{latest_row['team_name']}</b> · "
-    f"Position <b>{latest_row['player_position']}</b> · Level <b>{LEVEL_LABEL.get(level, level)}</b> · "
-    f"{age_txt}{bio.status_badge_html(player_bio.get('status', 'Other / Unknown'))}<br>"
-    f"{debut_txt}{cur_team_txt} · Seasons in dataset: <b>{sorted(pdf_all['season'].unique())[0]}"
-    f"–{sorted(pdf_all['season'].unique())[-1]}</b></div></div></div>",
-    unsafe_allow_html=True,
-)
-
-# --- headline cards ----------------------------------------------------
-if kind == "batting":
-    wrc = wrc_plus(line, lg_line)
-    opsp = ops_plus(line, lg_line)
-    stat_cards([
-        {"label": "G", "value": int(line["G"])},
-        {"label": "AVG/OBP/SLG", "value": f"{line['AVG']:.3f}/{line['OBP']:.3f}/{line['SLG']:.3f}" if pd.notna(line["AVG"]) else "—"},
-        {"label": "OPS", "value": f"{line['OPS']:.3f}" if pd.notna(line["OPS"]) else "—"},
-        {"label": "wRC+", "value": f"{wrc:.0f}" if pd.notna(wrc) else "—",
-         "sub": ("above avg" if wrc >= 100 else "below avg") if pd.notna(wrc) else None,
-         "sub_color": GOOD if pd.notna(wrc) and wrc >= 100 else BAD},
-    ])
-    stat_cards([
-        {"label": "BB% / K%", "value": f"{100*line['BB_pct']:.1f}% / {100*line['K_pct']:.1f}%"},
-        {"label": "ISO / BABIP", "value": f"{line['ISO']:.3f} / {line['BABIP']:.3f}" if pd.notna(line["ISO"]) else "—"},
-        {"label": "OPS+", "value": f"{opsp:.0f}" if pd.notna(opsp) else "—"},
-        {"label": "HR / RBI / SB", "value": f"{int(line['HR'])}/{int(line['RBI'])}/{int(line['SB'])}"},
-    ])
-else:
-    fip_val = fip(line, lg_line)
-    stat_cards([
-        {"label": "G (GS)", "value": f"{int(line['G'])} ({int(line['GS'])})"},
-        {"label": "IP", "value": f"{line['IP']:.1f}"},
-        {"label": "ERA / FIP", "value": f"{line['ERA']:.2f} / {fip_val:.2f}" if pd.notna(line["ERA"]) else "—"},
-        {"label": "WHIP", "value": f"{line['WHIP']:.2f}" if pd.notna(line["WHIP"]) else "—"},
-    ])
-    kbb = 100 * (line["K_pct"] - line["BB_pct"])
-    stat_cards([
-        {"label": "K/9 / BB/9", "value": f"{line['K9']:.1f} / {line['BB9']:.1f}" if pd.notna(line["K9"]) else "—"},
-        {"label": "K-BB%", "value": f"{kbb:.1f}%", "sub": ("strong" if kbb >= 15 else "shaky") if pd.notna(kbb) else None,
-         "sub_color": GOOD if kbb >= 15 else BAD},
-        {"label": "HR/9", "value": f"{line['HR9']:.2f}" if pd.notna(line["HR9"]) else "—"},
-        {"label": "W-L (SV)", "value": f"{int(line['W'])}-{int(line['L'])} ({int(line['SV'])})"},
-    ])
-
-st.caption(f"Rates benchmarked against the {int(lg_line.get('season', pdf['season'].max()))} {LEVEL_LABEL.get(level, level)} league average.")
-
-# --- scouting radar + full stat sheet, with optional comparison -------------
-r1, r2 = st.columns([1, 1])
-with r1:
-    section("🎯", "Scouting radar", "Each axis is a percentile (0-100) vs. every player at this level in the selected season(s).")
-    min_sample = "PA" if kind == "batting" else "IP"
-    pop_lines = [batting_line(g) if kind == "batting" else pitching_line(g) for _, g in pool.groupby("player_id")]
-    pop_df = pd.DataFrame(pop_lines)
-    if not pop_df.empty:
-        pop_df = pop_df[pop_df[min_sample] >= (10 if kind == "batting" else 3)]
-    if kind == "pitching" and not pop_df.empty:
-        pop_df["K_BB_pct"] = pop_df["K_pct"] - pop_df["BB_pct"]
-
-    def radar_values(ln):
-        axes, vals = [], []
-        for label, key, invert in radar_metrics(kind):
-            col = "K_BB_pct" if key is None else key
-            v = (ln["K_pct"] - ln["BB_pct"]) if key is None else ln[key]
-            pct = percentile_rank(pop_df[col], v) if not pop_df.empty and col in pop_df else np.nan
-            pct = 100 - pct if invert and pd.notna(pct) else pct
-            axes.append(label); vals.append(pct if pd.notna(pct) else 50)
-        return axes, vals
-
-    axes, vals = radar_values(line)
-    fig = go.Figure()
-    fig.add_trace(go.Scatterpolar(r=vals + [vals[0]], theta=axes + [axes[0]], fill="toself", name=picked_name,
-                                   line=dict(color="#f97316")))
-    if compare_on and compare_name:
-        cmp_id = candidates[candidates["player_full_name"] == compare_name]["player_id"].iloc[0]
-        _, cmp_pdf, _, _, cmp_line, _ = compute(cmp_id, sel_seasons)
-        caxes, cvals = radar_values(cmp_line)
-        fig.add_trace(go.Scatterpolar(r=cvals + [cvals[0]], theta=caxes + [caxes[0]], fill="toself", name=compare_name,
-                                       line=dict(color="#38bdf8")))
+tabs = st.tabs(["Performance", "Game log", "Splits & development", "Compare", "News", "All metrics & report"])
+with tabs[0]:
+    a, b = st.columns([1.5, 1], gap="large")
+    with a:
+        section("", "Recent direction", "Rates are recalculated from the counts inside each trailing window.")
+        opts = ["OPS", "OBP", "ISO", "K_pct", "wOBA"] if kind == "batting" else ["ERA", "WHIP", "K_BB_pct", "K9", "BB9"]
+        sub = st.columns([1, 1])
+        with sub[0]:
+            metric = st.selectbox("Trend metric", opts, format_func=label, key=f"trend_metric_{kind}")
+        with sub[1]:
+            window = st.select_slider("Trailing appearances", options=[1, 3, 5, 10, 15, 30], value=10, key=f"trend_window_{kind}")
+        rolling = rolling_rate(pdf, kind, window, metric)
+        chart(charts.trend(rolling, metric, cohort.get(metric)), "player_trend")
+        st.caption(f"{min(window, len(pdf))} of {window} appearances available in the latest window. Hover for the actual window size. This view does not infer growth from one game.")
+    with b:
+        section("", "The peer comparison", "Same season, league and dates. Higher bars always mean a more favorable result.")
+        min_sample = st.number_input("Peer minimum PA" if kind == "batting" else "Peer minimum IP", min_value=0, value=0 if ctx.source == "Included sample" else 100 if kind == "batting" else 20, step=5, key=f"peer_min_{kind}")
+        eligible = population[population["PA" if kind == "batting" else "IP"].ge(min_sample)]
+        fig, count = charts.percentile_bars(line, eligible, kind)
+        if count:
+            chart(fig, "player_percentiles")
+            st.caption(f"{len(eligible)} comparison players. Equal results share a midrank. These are statistical percentiles, not scouting grades.")
+        else:
+            st.info("At least five peers with available values are needed to show a percentile. Lower the threshold or widen the dates.")
+    section("", "Questions to take to the field", "Data-led prompts for a scout or coach; video and firsthand observation still matter.")
+    if kind == "batting":
+        brief("Approach at the plate", f"Walk rate: {fmt(line['BB_pct'], 'BB_pct')}; strikeout rate: {fmt(line['K_pct'], 'K_pct')}. Review whether swing decisions and two-strike execution support these results. Pitch locations and swing decisions are not measured by these box scores.")
+        brief("Contact with impact", f"Extra-base power (ISO): {fmt(line['ISO'], 'ISO')}. Inspect the game log to see whether production is spread across games. Exit velocity and launch angle are not available here.")
     else:
-        fig.add_trace(go.Scatterpolar(r=[50] * (len(axes) + 1), theta=axes + [axes[0]], line=dict(dash="dot", color="#8b96ad"), name="League avg"))
-    fig.update_layout(polar=dict(radialaxis=dict(range=[0, 100], visible=True)), showlegend=True,
-                       margin=dict(l=30, r=30, t=20, b=20), height=380,
-                       paper_bgcolor="rgba(0,0,0,0)", font_color="#e5e9f0")
-    st.plotly_chart(fig, use_container_width=True)
+        brief("Command and missed bats", f"Strikeout minus walk rate: {fmt(line['K_BB_pct'], 'K_BB_pct')}. Review strike throwing, count leverage and pitch execution on video. This is not a direct measure of command or pitch quality.")
+        brief("Workload context", f"{fmt(line['IP'], 'IP')} innings in {int(line['G'])} appearances. Compare starts and relief appearances separately. The data alone cannot establish fatigue or injury risk.")
 
-with r2:
-    section("📋", "Full stat sheet")
-    sheet = stat_sheet(line, lg_line, kind)
-    if compare_on and compare_name:
-        cmp_id = candidates[candidates["player_full_name"] == compare_name]["player_id"].iloc[0]
-        _, _, _, _, cmp_line, cmp_lg = compute(cmp_id, sel_seasons)
-        cmp_sheet = stat_sheet(cmp_line, cmp_lg, kind)
-        sheet[compare_name] = cmp_sheet["Value"]
-    st.dataframe(sheet, hide_index=True, use_container_width=True, height=380)
-    download_button(sheet, f"{picked_name.replace(' ', '_')}_stat_sheet.csv")
+with tabs[1]:
+    section("", "Every game behind the summary", "Select a game to inspect its complete source row. Doubleheaders remain separate by game ID.")
+    counters = {"Hits": "batting_H", "Total bases": "batting_TB", "Strikeouts": "batting_SO", "Home runs": "batting_HR"} if kind == "batting" else {"Strikeouts": "pitching_SO", "Earned runs": "pitching_ER", "Walks": "pitching_BB", "Pitches": "pitching_PI"}
+    selected = st.selectbox("Game-by-game metric", list(counters), key=f"game_metric_{kind}")
+    chart(charts.game_bars(pdf, counters[selected], selected), "player_games")
+    keycols = [c for c in ["game_date", "game_pk", "team_name", "opponent_name", "result", "team_score", "opponent_score", *counters.values()] if c in pdf]
+    st.dataframe(pdf[keycols].sort_values("game_date", ascending=False), hide_index=True, width="stretch")
+    options = pdf["game_pk"].drop_duplicates().tolist()
+    game_labels = {row["game_pk"]: f"{row['game_date']:%d %b %Y} · {row.get('opponent_name', 'opponent unknown')} · Game {row['game_pk']}" for _, row in pdf.iterrows()}
+    game = st.selectbox("Inspect one game", options, format_func=game_labels.get, key=f"game_detail_{kind}")
+    with st.expander("All fields for the selected game"):
+        st.dataframe(pdf[pdf["game_pk"].eq(game)].T.rename(columns=lambda _: "Source value").astype(str), width="stretch")
+    download_button(pdf, f"player_{pid}_{ctx.season}_{kind}_games.csv", "Download every game field", f"games_export_{kind}")
 
-st.divider()
-
-# --- growth / trend section -------------------------------------------------
-section("📈", "Growth & form")
-tab1, tab2, tab3, tab4 = st.tabs(["Rolling form", "Month by month", "Season over season", "Home vs. away"])
-
-with tab1:
-    window = st.slider("Trailing-game window", 5, 30, 15)
-    roll = rolling_rate(pdf, kind, window)
-    if roll.empty:
-        st.info("Not enough games yet for a rolling window this wide.")
+with tabs[2]:
+    section("", "Find the context behind a change", "All splits retain your league, team, position and date filters.")
+    split_options = {"Month": "month", "Home / away": "is_home", "Team": "team_name"}
+    if kind == "pitching":
+        split_options["Starter / reliever"] = "role"
+    split_name = st.selectbox("Split by", list(split_options), key=f"split_by_{kind}")
+    key = split_options[split_name]
+    if key in pdf:
+        splits = split_table(pdf, kind, key)
+        metric = "OPS" if kind == "batting" else "ERA"
+        chart(charts.split_bars(splits, metric), "player_splits")
+        st.dataframe(splits[["Split", "G", "PA", "AVG", "OBP", "SLG", "OPS", "BB_pct", "K_pct"]] if kind == "batting" else splits[["Split", "G", "IP", "ERA", "WHIP", "K9", "BB9"]].assign(IP=lambda d: d["IP"].map(lambda x: fmt(x,"IP"))), hide_index=True, width="stretch")
+        download_button(splits, f"player_{pid}_splits.csv", "Download split table", f"split_export_{kind}")
     else:
-        fig = px.line(roll, x="game_date", y="value", title=roll["metric"].iloc[0])
-        lg_val = lg_line["wOBA"] if kind == "batting" else lg_line["ERA"]
-        fig.add_hline(y=lg_val, line_dash="dot", annotation_text="league avg", opacity=0.6)
-        if kind == "pitching":
-            fig.update_yaxes(autorange="reversed", title="ERA (lower is better)")
-        fig.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font_color="#e5e9f0")
-        st.plotly_chart(fig, use_container_width=True)
+        st.info("This dataset does not contain the selected split field.")
+    st.caption("For another season, change Season in the sidebar. Benchmarks are recomputed within that season instead of pooling years into a misleading comparison.")
 
-with tab2:
-    ms = monthly_split(pdf, kind)
-    y = "wOBA" if kind == "batting" else "ERA"
-    fig = px.bar(ms, x="month", y=y, title=f"{y} by month")
-    fig.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font_color="#e5e9f0")
-    st.plotly_chart(fig, use_container_width=True)
-    cols = (["month", "G", "PA", "AVG", "OBP", "SLG", "wOBA", "BB_pct", "K_pct"] if kind == "batting"
-            else ["month", "G", "IP", "ERA", "WHIP", "K9", "BB9"])
-    st.dataframe(ms[cols].round(3), hide_index=True, use_container_width=True)
-
-with tab3:
-    ss = season_split(pdf_all, kind)
-    if len(ss) < 2:
-        st.info("Only one season on file for this player — nothing to compare yet.")
+with tabs[3]:
+    section("", "Two players. The same frame of reference.", "Comparison players come from this league and date range.")
+    choices = population[~population["player_id"].eq(pid)]
+    if choices.empty:
+        st.info("A second player is not available in this selection.")
     else:
-        y = "wOBA" if kind == "batting" else "ERA"
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(x=ss["season"], y=ss[y], mode="lines+markers", name=y, line=dict(color="#f97316")))
-        fig.update_layout(title=f"Career {y} trend across seasons on file", xaxis_title="Season", yaxis_title=y,
-                           paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font_color="#e5e9f0")
-        if kind == "pitching":
-            fig.update_yaxes(autorange="reversed")
-        st.plotly_chart(fig, use_container_width=True)
-        cols = (["season", "G", "PA", "AVG", "OBP", "SLG", "wOBA", "ISO", "BB_pct", "K_pct"] if kind == "batting"
-                else ["season", "G", "IP", "ERA", "WHIP", "K9", "BB9", "K_pct", "BB_pct"])
-        st.dataframe(ss[cols].round(3), hide_index=True, use_container_width=True)
+        labels = dict(zip(choices["player_id"], choices["Player"] + " · " + choices["Team"]))
+        other = st.selectbox("Compare against", list(labels), format_func=lambda p: f"{labels[p]} · ID {p}", key=f"compare_pick_{kind}")
+        other_df = src[src["player_id"].eq(other)]
+        cmp_line = enriched_line(other_df, kind, cohort)
+        cmp_name = other_df.iloc[-1]["player_full_name"]
+        vs_a, vs_b = st.columns(2)
+        with vs_a:
+            st.markdown(f"<div style='display:flex;align-items:center;gap:.6rem'>{player_photo_html(pid, 44)}<b>{names[pid]}</b></div>", unsafe_allow_html=True)
+        with vs_b:
+            st.markdown(f"<div style='display:flex;align-items:center;gap:.6rem'>{player_photo_html(other, 44)}<b>{cmp_name}</b></div>", unsafe_allow_html=True)
+        chart(charts.compare_dots(line, cmp_line, [names[pid], cmp_name], ["AVG", "OBP", "SLG"] if kind == "batting" else ["K_pct", "BB_pct", "K_BB_pct"]), "player_comparison")
+        keys = ["G", "PA", "AVG", "OBP", "SLG", "OPS", "ISO", "HR", "BB_pct", "K_pct"] if kind == "batting" else ["G", "IP", "ERA", "WHIP", "K9", "BB9", "K_BB_pct", "FIP_est"]
+        comparison = pd.DataFrame({"Metric": [label(k) for k in keys], f"{names[pid]} · {pid}": [fmt(line.get(k),k) for k in keys], f"{cmp_name} · {other}": [fmt(cmp_line.get(k),k) for k in keys]})
+        st.dataframe(comparison, hide_index=True, width="stretch")
+        download_button(comparison, f"compare_{pid}_{other}.csv", "Download comparison", f"compare_export_{kind}")
 
-with tab4:
-    ha = home_away_split(pdf, kind)
-    if ha.empty:
-        st.info("No home/away data for this selection.")
+with tabs[4]:
+    section("", "Recent coverage", f"News search for \"{names[pid]}\", via Google News — indexes ESPN, SB Nation, MiLB.com and local beat writers, not one site.")
+    if st.button("Load recent news", key=f"news_lookup_{pid}"):
+        with st.spinner("Searching for recent coverage…"):
+            st.session_state[f"news_{pid}"] = news.fetch_news(f"{names[pid]} {latest['team_name']} baseball")
+    if f"news_{pid}" in st.session_state:
+        news_list(st.session_state[f"news_{pid}"])
     else:
-        y = "OPS" if kind == "batting" else "ERA"
-        fig = px.bar(ha, x="split", y=y, color="split", title=f"{y}: home vs. away",
-                     color_discrete_sequence=["#f97316", "#38bdf8"])
-        fig.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font_color="#e5e9f0")
-        st.plotly_chart(fig, use_container_width=True)
-        cols = (["split", "G", "PA", "AVG", "OBP", "SLG", "OPS"] if kind == "batting"
-                else ["split", "G", "IP", "ERA", "WHIP", "K9", "BB9"])
-        st.dataframe(ha[cols].round(3), hide_index=True, use_container_width=True)
+        st.caption("Not loaded yet — click above. Coverage on complex-league and short-season players is often thin.")
 
-st.divider()
-
-# --- per-game distribution ----------------------------------------------
-section("📊", "Per-game distribution", "The averages above hide the spread — this is the actual game-to-game shape behind them.")
-if kind == "batting":
-    dist_metric = st.selectbox("Metric", ["Hits per game", "Total bases per game", "Strikeouts per game"])
-    colmap = {"Hits per game": "batting_H", "Total bases per game": "batting_TB", "Strikeouts per game": "batting_SO"}
-else:
-    dist_metric = st.selectbox("Metric", ["Earned runs per outing", "Strikeouts per outing", "Walks per outing"])
-    colmap = {"Earned runs per outing": "pitching_ER", "Strikeouts per outing": "pitching_SO", "Walks per outing": "pitching_BB"}
-per_game = pdf.groupby("game_pk")[colmap[dist_metric]].sum()
-if per_game.empty:
-    st.info("No games to chart.")
-else:
-    fig = px.histogram(per_game, nbins=int(per_game.max()) + 2 if per_game.max() < 15 else 15, title=dist_metric,
-                        color_discrete_sequence=["#f97316"])
-    fig.add_vline(x=per_game.mean(), line_dash="dot", annotation_text=f"avg {per_game.mean():.2f}")
-    fig.update_layout(showlegend=False, xaxis_title=dist_metric, yaxis_title="Games",
-                       paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font_color="#e5e9f0")
-    st.plotly_chart(fig, use_container_width=True)
-
-st.caption(
-    "Age and MLB/MiLB status come from a live MLB Stats API lookup on the player's real MLB ID, cached locally. "
-    "wOBA/wRC+/FIP are centered on this dataset's own season+level averages — see the Home page for the full methodology note."
-)
+with tabs[5]:
+    section("", "The complete metric sheet", "Every original metric is listed, including unavailable fields. Extra source columns remain in the game-log export.")
+    sheet = stat_sheet(line, cohort, kind)
+    query = st.text_input("Find a metric", placeholder="Try walks, WHIP, power…", key=f"metric_search_{kind}")
+    visible = sheet[sheet.astype(str).apply(lambda col: col.str.contains(query, case=False, regex=False)).any(axis=1)] if query else sheet
+    st.dataframe(visible, hide_index=True, width="stretch", height=430)
+    download_button(sheet, f"player_{pid}_{kind}_metrics.csv", "Download complete metric sheet", f"metrics_export_{kind}")
+    notes = st.text_area("Your scouting / coaching notes", placeholder="What did you observe? What would you check next?", key=f"notes_{pid}_{kind}")
+    report = f"# {names[pid]} · {ctx.season}\n\n{ctx.description}\n\nDates: {ctx.start} to {ctx.end}. Source: {ctx.location}.\n\n"
+    report += "\n".join(f"- {r['Metric']}: {r['Value']}" for _, r in sheet.iterrows())
+    report += f"\n\n## Notes\n{notes}\n\nObserved games only. Small samples are not stable skill estimates. Estimated metrics are not official park-adjusted values.\n"
+    st.download_button("Download player report", report.encode(), f"player_{pid}_report.md", "text/markdown", key=f"report_export_{kind}")
+    with st.expander("Full status record"):
+        st.caption(f"Same lookup shown in the header badge above, for {names[pid]}.")
+        st.dataframe(pd.DataFrame([player_bio]).drop(columns=["fetched_at"], errors="ignore"), hide_index=True, width="stretch")

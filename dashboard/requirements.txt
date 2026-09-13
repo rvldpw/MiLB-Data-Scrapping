@@ -1,8 +1,7 @@
-streamlit>=1.38
-pandas>=2.2
-pyarrow>=16.0
-numpy>=1.26
-plotly>=5.22
-datasets>=2.20
-huggingface_hub>=0.24
-requests>=2.31
+streamlit>=1.49,<2
+pandas>=2.2,<3
+numpy>=1.26,<3
+plotly>=6,<7
+pyarrow>=19,<24
+huggingface_hub>=1,<2
+requests>=2.32,<3

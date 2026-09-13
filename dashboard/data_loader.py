@@ -1,60 +1,129 @@
-"""Loads the rvlpw/milb-game-logs dataset and does light, one-time cleanup.
+"""Load only a selected season/league; preserve source columns and missingness."""
+from pathlib import Path
+import json
+import os
+import re
 
-Kept deliberately simple: pull the two pre-built HF configs (batting, pitching),
-convert to pandas, fix dtypes, tag a position group + pitcher role. Everything
-else (rate stats, benchmarks) lives in metrics.py and is computed on demand
-from these two frames.
-"""
 import numpy as np
 import pandas as pd
+import pyarrow.parquet as pq
 import streamlit as st
+from huggingface_hub import HfApi, hf_hub_download
 
-DATASET_ID = "rvlpw/milb-game-logs"
+from dashboard.metric_catalog import RAW_FIELDS
 
-# Collapse raw MLB position codes into the groups a scouting report actually uses.
-POSITION_GROUP = {
-    "C": "C", "1B": "1B", "2B": "2B", "3B": "3B", "SS": "SS",
-    "LF": "OF", "CF": "OF", "RF": "OF", "OF": "OF",
-    "DH": "DH", "P": "P",
-}
-POSITION_ORDER = ["C", "1B", "2B", "3B", "SS", "OF", "DH"]
-LEVEL_ORDER = ["A", "A+", "AA"]
+ROOT = Path(__file__).resolve().parents[1]
+DATASET_ID = os.getenv("HF_REPO_ID", "rvlpw/milb-game-logs")
 LEVEL_LABEL = {"A": "Single-A", "A+": "High-A", "AA": "Double-A"}
+POSITION_ORDER = ["C", "1B", "2B", "3B", "SS", "OF", "DH", "UT"]
+POSITION_GROUP = {p: p for p in POSITION_ORDER} | {"LF": "OF", "CF": "OF", "RF": "OF", "P": "P"}
+PATH_PATTERN = re.compile(r"data/season[-=](\d+)/league[-=](\d+)/team[-=](\d+)/(batting|pitching)\.parquet$")
 
 
-def _clean_common(df: pd.DataFrame) -> pd.DataFrame:
+def server_token():
+    token = os.getenv("HF_TOKEN")
+    if not token:
+        try:
+            token = st.secrets.get("HF_TOKEN")
+        except (FileNotFoundError, st.errors.StreamlitSecretNotFoundError):
+            token = None
+    return token
+
+
+def clean_data(df, kind):
+    df = df.copy()
+    if df.empty:
+        return pd.DataFrame(columns=["season", "team_level", "league_id", "league_name", "player_id", "team_id",
+                                     "player_full_name", "team_name", "game_pk", "game_date", "pos_group", "role",
+                                     *RAW_FIELDS[kind].values()])
+    aliases = {"team_league_id": "league_id", "team_league": "league_name", "team_level_id": "sport_id"}
+    for old, new in aliases.items():
+        if new not in df and old in df:
+            df[new] = df[old]
+    required = ["player_id", "team_id", "game_pk", "season", "game_date", "team_level", "league_id"]
+    missing = [c for c in required if c not in df]
+    if missing:
+        raise ValueError("Missing required dataset columns: " + ", ".join(missing))
+    def decode(value):
+        try:
+            result = json.loads(value) if isinstance(value, str) else {}
+            return result if isinstance(result, dict) else {}
+        except (TypeError, ValueError):
+            return {}
+    raw = df.get("raw_stats_json", pd.Series("{}", index=df.index)).map(decode)
+    for source, column in RAW_FIELDS[kind].items():
+        values = df[column] if column in df else pd.Series(np.nan, index=df.index)
+        fallback = raw.map(lambda item: item.get(source, np.nan))
+        df[column] = values.where(values.notna(), fallback)
+        if column != "pitching_IP_str":
+            df[column] = pd.to_numeric(df[column], errors="coerce")
+    for col in ("player_id", "team_id", "game_pk", "season", "league_id"):
+        df[col] = pd.to_numeric(df[col], errors="coerce").astype("Int64")
     df["game_date"] = pd.to_datetime(df["game_date"], errors="coerce")
-    df["month"] = df["game_date"].dt.to_period("M").astype(str)
-    df["win"] = np.where(df["result"] == "W", 1, np.where(df["result"] == "L", 0, np.nan))
-    df["team_level"] = df["team_level"].replace({"A-": "A"})
-    return df
+    if df[required].isna().any().any():
+        raise ValueError("Some rows have invalid game dates or missing identity fields")
+    for col, fallback in (("player_full_name", "Unknown player"), ("team_name", "Unknown team"),
+                          ("league_name", "Unknown league"), ("player_position", "Unknown")):
+        if col not in df:
+            df[col] = fallback
+        df[col] = df[col].fillna(fallback)
+    df["month"] = df["game_date"].dt.strftime("%Y-%m")
+    df["pos_group"] = df["player_position"].map(POSITION_GROUP).fillna("UT")
+    if kind == "pitching":
+        def outs(value):
+            try:
+                a, _, b = str(value).partition(".")
+                return int(a) * 3 + int(b or 0) if b in ("", "0", "1", "2") else np.nan
+            except ValueError:
+                return np.nan
+        df["pitching_outs"] = df["pitching_outs"].fillna(df["pitching_IP_str"].map(outs))
+        df["role"] = np.where(df["pitching_GS"].isna(), "Unknown", np.where(df["pitching_GS"] > 0, "SP", "RP"))
+    keys = ["game_pk", "team_id", "player_id"]
+    if "fetched_at" in df:
+        df = df.sort_values("fetched_at", na_position="first")
+    return df.drop_duplicates(keys, keep="last").sort_values(["game_date", "game_pk", "player_id"]).reset_index(drop=True)
 
 
-@st.cache_data(show_spinner="Pulling MiLB game logs from Hugging Face...", ttl=6 * 3600)
-def load_data():
-    from datasets import load_dataset
+@st.cache_data(ttl=900, show_spinner=False)
+def source_catalog(source, location, token=None):
+    if source == "Hugging Face":
+        info = HfApi(token=token).repo_info(location, repo_type="dataset")
+        revision = info.sha
+        files = [f.rfilename for f in info.siblings]
+        if "catalog.json" not in files:
+            raise ValueError("This dataset has no catalog.json yet. Finish the scanner's first checkpoint, then refresh.")
+        file = hf_hub_download(location, "catalog.json", repo_type="dataset", revision=revision, token=token)
+        entries = json.loads(Path(file).read_text())
+        rows = list(entries.values())
+    else:
+        revision = "local"
+        root = Path(location).expanduser().resolve()
+        rows = []
+        for path in sorted(root.glob("data/**/*.parquet")):
+            match = PATH_PATTERN.search(str(path.relative_to(root)))
+            if not match:
+                continue
+            frame = pq.ParquetFile(path).read(columns=["season", "league_id", "league_name", "team_level", "team_id", "team_name"]).to_pandas()
+            if frame.empty:
+                continue
+            row = frame.iloc[0].to_dict()
+            row[match[4]] = str(path.relative_to(root))
+            rows.append(row)
+    if not rows:
+        raise ValueError("No game-log tables found in this source.")
+    return pd.DataFrame(rows), revision
 
-    batting = load_dataset(DATASET_ID, "batting", split="train").to_pandas()
-    pitching = load_dataset(DATASET_ID, "pitching", split="train").to_pandas()
 
-    batting = _clean_common(batting)
-    batting["pos_group"] = batting["player_position"].map(POSITION_GROUP).fillna("UT")
-
-    pitching = _clean_common(pitching)
-    pitching["IP"] = pitching["pitching_outs"] / 3.0
-    # A player is treated as a "starter" for a given appearance if he started it.
-    pitching["role"] = np.where(pitching["pitching_GS"].fillna(0) > 0, "SP", "RP")
-
-    return batting, pitching
-
-
-@st.cache_data(show_spinner=False)
-def season_levels(batting: pd.DataFrame, pitching: pd.DataFrame):
-    """All (season, level) combos present, sorted, for sidebar filters."""
-    cols = ["season", "team_level"]
-    combo = pd.concat([batting[cols], pitching[cols]]).drop_duplicates()
-    combo["level_rank"] = combo["team_level"].apply(
-        lambda x: LEVEL_ORDER.index(x) if x in LEVEL_ORDER else 99
-    )
-    combo = combo.sort_values(["season", "level_rank"])
-    return list(combo["season"].unique()), combo
+@st.cache_data(ttl=900, show_spinner=False, max_entries=12)
+def load_partition(source, location, revision, paths, kind, token=None):
+    frames = []
+    root = Path(location).expanduser().resolve() if source != "Hugging Face" else None
+    for relative in sorted(set(paths)):
+        if not PATH_PATTERN.fullmatch(relative):
+            raise ValueError("The catalog contains an unsupported table path")
+        if source == "Hugging Face":
+            file = hf_hub_download(location, relative, repo_type="dataset", revision=revision, token=token)
+        else:
+            file = root / relative
+        frames.append(pq.ParquetFile(file).read().to_pandas())
+    return clean_data(pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(), kind)
