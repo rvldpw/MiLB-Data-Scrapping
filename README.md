@@ -1,159 +1,128 @@
-# MiLB Prospect Scanner — automated, incremental, Google Sheets-backed
+# MiLB player game logs
 
-Scans **A / A+ / AA** MiLB levels only, pulls full 2021–current-season stats for
-every player still active, splits into **Batter / Pitcher / Catcher**, and keeps a
-running Google Sheet up to date automatically via GitHub Actions.
+Collect individual game performances into a Hugging Face dataset, organized by season, league, and team. Google Sheets and Apps Script are no longer used.
 
-📄 **Docs:** [`docs/DEPLOY.md`](docs/DEPLOY.md) (Apps Script setup/redeploy) ·
-[`docs/SCANNER_GUIDE.md`](docs/SCANNER_GUIDE.md) (module map + env vars) ·
-[`docs/CHANGELOG.md`](docs/CHANGELOG.md) (game-log update walkthrough)
+## Daily behavior
 
-## How the pieces fit together
+On a fresh dataset, the scheduled run processes **one season per UTC day**:
 
+| Successful daily run | Season |
+| --- | --- |
+| 1 | 2021 |
+| 2 | 2022 |
+| 3 | 2023 |
+| 4 | 2024 |
+| 5 | 2025 |
+| 6 | 2026, through the completed games available that day |
+| Following days | New, missing, changed, and recent 2026 games |
+
+The example assumes startup during 2026. The ending year is read from the current UTC date, not hardcoded. When 2027 arrives, the scanner reconciles 2026 once, then starts 2027 on the next daily run. It waits for actual completed games during the off-season. The same rollover applies every year.
+
+A slow or failed season can take multiple days. Progress is saved every 100 games. The next run resumes that season; it never skips to the next year because of a timeout or failed API request. Running the workflow again on the same UTC day can resume an unfinished season, but cannot advance a second season after one finishes.
+
+## Coverage
+
+- Regular-season games (`R`) at Double-A (12), High-A (13), and Single-A (14).
+- All players with batting or pitching game statistics, including MLB veterans and players who are no longer active. The old current-prospect filter has been removed.
+- One row per `(game_pk, team_id, player_id)` in each batting/pitching table. Doubleheaders remain separate games.
+- Player name, position, team, opponent, historical league, game date, final team scores, and win/loss/tie.
+- Batting: AB, PA, H, HR, RBI, runs, walks, strikeouts, steals, and more.
+- Pitching: innings, outs, hits/runs/earned runs allowed, walks, strikeouts, pitches, and decisions when supplied.
+- Additional source fields remain available in `raw_stats_json`. Unavailable statistics remain null.
+
+This release replaces the old season-summary workbook and bio/age enrichment with game-log tables. Catchers appear in batting tables with their game position; there is no separate catcher table. It does not collect Triple-A, Rookie, postseason games, or pitch-by-pitch events.
+
+## Dataset layout
+
+```text
+README.md                  # Generated viewer configurations and source information
+catalog.json               # Season/league/team names and file paths
+state/
+  index.json               # Backfill queue, scope, season completion
+  2021.json                # Successfully committed games for 2021
+data/
+  season-2021/
+    league-113/
+      team-402/
+        batting.parquet
+        pitching.parquet
 ```
-GitHub Actions (cron, daily)
-        │
-        ▼
-   run.py  →  scanner/  (pulls MLB Stats API, computes metrics, splits sheets)
-        │
-        ├── writes this run's DELTA to output/milb_prospect_scan_delta.xlsx
-        │   (uploaded as a workflow artifact — handy for a quick look/download)
-        │
-        └── pushes rows to Google Sheets via a small Apps Script Web App
-            (this is your permanent, cumulative "databank")
-```
 
-**The incremental part** (the part you asked about): the Google Sheet remembers
-which past seasons it already has fully synced (in a hidden `_SyncState` tab). Every
-run:
-1. Asks the Sheet which seasons are already marked complete.
-2. Skips fetching those entirely — a season before the current calendar year is
-   over and won't change again, so once it's synced, it's done for good.
-3. Always re-fetches the **current** season only (it's still in progress).
-4. Pushes what it fetched (upsert — safe to re-run) and marks any newly-finished
-   prior season complete.
+Numeric IDs keep paths stable. League names and affiliations come from the game's season, including the league naming changes in 2021. The team catalog provides readable names. Each team has two tables for each season/league it appears in.
 
-Net effect: the **first run ever** does the full 2021–2026 backfill (slow, many API
-calls). **Every run after that** only touches the current season — a small fraction
-of the work — and the Sheet keeps accumulating the full career history over time.
+The folders use `season-2021`, `league-113`, and `team-402` naming so standard Parquet readers do not infer conflicting partition-column types. Every row already contains its season, league ID, and team ID.
 
-## One-time setup
+Hugging Face stores Parquet files and provides dataset viewing; this is not a live SQL database. Batting and pitching have separate dataset configurations because their schemas differ. Each league also has its own configurations, such as `league-113-batting`.
 
-### 1. Create the Google Sheet databank
-1. Create a new Google Sheet (this becomes your databank — Batter/Pitcher/Catcher
-   tabs get created automatically on first sync).
-2. In the Sheet: **Extensions → Apps Script**.
-3. Delete the default `Code.gs` content and paste in [`apps_script/Code.gs`](apps_script/Code.gs).
-4. **Project Settings → Script Properties → Add script property**:
-   - Name: `SHARED_SECRET`
-   - Value: any long random string (e.g. generate one with `openssl rand -hex 32`)
-5. **Deploy → New deployment → type "Web app"**:
-   - Execute as: **Me**
-   - Who has access: **Anyone**
-6. Copy the deployment URL (ends in `/exec`).
+## Setup
 
-### 2. Add GitHub repo secrets
-In your GitHub repo: **Settings → Secrets and variables → Actions → New repository secret**:
-- `APPS_SCRIPT_URL` = the `/exec` URL from step 1.6
-- `APPS_SCRIPT_SECRET` = the same value you put in `SHARED_SECRET`
+See [deployment instructions](docs/DEPLOY.md). In brief:
 
-### 3. Push this code to the repo
-The workflow at [`.github/workflows/milb_scan.yml`](.github/workflows/milb_scan.yml)
-is already wired up with:
-- `schedule:` — runs daily at 09:00 UTC automatically
-- `workflow_dispatch:` — a manual **"Run workflow"** button in the Actions tab, for
-  on-demand runs
+1. Put this project at the root of your GitHub repository, including `.github/workflows`.
+2. Add repository variable `HF_REPO_ID` with `your-username/milb-game-logs`.
+3. Add repository secret `HF_TOKEN` with a Hugging Face token allowed to write to that dataset.
+4. Open **Actions → MiLB daily game logs → Run workflow**.
 
-That's it — no further setup. The first run will take a while (full 2021–2026
-backfill across A/A+/AA); check the Actions log to watch progress.
+The workflow is configured for daily runs at **09:00 UTC / 16:00 WIB**. Hugging Face holds the persistent data and checkpoints; a fresh GitHub runner does not restart the backfill. A newly created dataset is private by default.
 
-## Running locally (optional)
+## Local preview
+
+Python 3.12 is used in CI.
+
 ```bash
-pip install -r requirements.txt
-export APPS_SCRIPT_URL="https://script.google.com/macros/s/.../exec"
-export APPS_SCRIPT_SECRET="your-secret"
-python run.py
-```
-Leave the two env vars unset to skip Sheets sync entirely and just get a local
-`output/milb_prospect_scan_delta.xlsx`.
-
-## Forcing a re-pull of a season
-Open the Sheet's `_SyncState` tab and either delete that season's row, or set its
-`complete` cell to `FALSE`. The next run will re-fetch it in full.
-
-## Game-by-game logs
-A second, opt-in pipeline (`scanner/game_log.py`) syncs one row **per game** instead
-of one row per season — useful for spotting hot/cold streaks or in-season trends,
-which the season summaries can't show you.
-
-**Scope:** only players currently active (same set as the summary sheets), and only
-the (player, season, level) combinations their season stat line actually shows.
-
-**Why it's paced differently:** even scoped to active players only, a full
-2021–2025 game-by-game backfill is thousands of extra API calls — enough to blow
-past the Action's 90-minute timeout in one go. So it drains gradually:
-- The **current season** is always fetched in full, every run.
-- **One historical season** gets backfilled per run (oldest first), controlled by
-  `MAX_GAMELOG_SEASONS_PER_RUN` (default `1`). Raise it via a repo secret/env var if
-  you want to trade a longer run for a faster backfill — just watch the timeout.
-- Completion is tracked independently of the season-summary pipeline, in its own
-  `_SyncState_gamelog_batting` / `_SyncState_gamelog_pitching` tabs — so it can
-  never interfere with (or be blocked by) the summary sync.
-
-**Output:** two new auto-created tabs, `BatterGameLog` and `PitcherGameLog`
-(catcher game logs land in `BatterGameLog` too, same as how catchers' *season*
-batting line sits in the `Batter`/`Catcher` split upstream — filter by joining back
-to the summary tabs on `player_id` if you need to isolate catchers). Each row is
-keyed by `(player_id, season, game_pk)` for upsert, not `team_id`, since a player
-can only appear once per game.
-
-Turn it off entirely with `GAME_LOG_ENABLED=false` if you just want the season
-summaries for now.
-
-## Redeploying the Apps Script after an update
-Apps Script Web Apps **do not** pick up code changes just from saving the file —
-you need a fresh deployment:
-1. Extensions → Apps Script → paste in the updated `Code.gs`.
-2. **Deploy → Manage deployments → (pencil icon) Edit → Version: New version → Deploy.**
-   This keeps the same `/exec` URL, so no GitHub secret update needed.
-   (Only use "New deployment" instead if you specifically want a new URL.)
-
-## Project layout
-```
-run.py                          CLI entry point
-scanner/
-  config.py                     seasons, levels, active-season definition
-  fetch.py                      MLB Stats API session, field maps, row builder
-  metrics.py                    derived rate stats (AVG/OBP/ERA/WHIP/etc.)
-  sheets_sync.py                talks to the Apps Script web app
-  game_log.py                   game-by-game log sync (separate, paced pipeline)
-  build.py                      orchestrates: decide what's new → pull → split → sync
-apps_script/Code.gs             paste into the Google Sheet's Apps Script editor
-.github/workflows/milb_scan.yml scheduled + manual trigger
-docs/
-  DEPLOY.md                     step-by-step: create + redeploy the Apps Script Web App
-  SCANNER_GUIDE.md               module-by-module guide + every env var this package reads
-  CHANGELOG.md                  what the game-log update added and how to roll it out
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
+python run.py --local-dir local-data --max-games 3
 ```
 
-## Notes & limitations
-- **Source**: public MLB Stats API (`statsapi.mlb.com` + `bdfed.stitch.mlbinfra.com`).
-- **Identity is always ID-based, never name-based.** Every row's `player_id` is MLB's
-  own permanent Person ID, attached to the stat line by the API itself — name is
-  carried alongside it as metadata, never used as a join key anywhere in this
-  pipeline (not for the Batter/Pitcher/Catcher split, not for the Sheets upsert key,
-  not for the age/bio lookup). Two players sharing a name can never get merged or
-  cross-matched.
-- **Age** comes from a per-player, ID-keyed lookup (`/api/v1/people/{player_id}`),
-  run once per unique active player per run, computed as of July 1st of each row's
-  own season. Toggle off with `ENRICH_WITH_BIO=false` if you want a faster run
-  without it.
-- **"Active"** = has a stat line in the current season at A/A+/AA. Simple, honest
-  proxy — not a live roster-status flag.
-- **Levels are locked** to A / A+ / AA on purpose.
-- **The season window has no hardcoded end year** — it tracks the real calendar
-  year, so the scanner keeps rolling forward (2027, 2028, ...) on its own without
-  any code changes.
-- If a Sheets push fails partway through a run, that run does **not** mark any season
-  complete, so the next scheduled run safely retries the full fetch for that run's
-  seasons rather than silently losing data.
+This makes real public MLB requests, writes local Parquet files, and makes no Hugging Face writes. Repeat to resume. Use a different directory with `--start-season 2024` to preview a different season. Local progress is independent of the deployed dataset. `--max-games` limits attempted box scores, not the number of schedule requests or output rows.
+
+## Download by league or team
+
+```python
+from huggingface_hub import snapshot_download
+
+snapshot_download(
+    repo_id="your-username/milb-game-logs",
+    repo_type="dataset",
+    allow_patterns=["data/season-2026/league-113/**/*.parquet", "catalog.json"],
+    local_dir="eastern-league-2026",
+)
+```
+
+For one team, use `data/season-2026/league-113/team-402/*.parquet`. For all seasons of a league, use `data/season-*/league-113/**/*.parquet`. Authenticate locally with `hf auth login` to access a private dataset.
+
+To load a league as a table with the optional `datasets` library:
+
+```python
+from datasets import load_dataset
+
+batting = load_dataset(
+    "your-username/milb-game-logs",
+    name="league-113-batting",
+    split="train",
+    token=True,  # use your saved token for a private dataset
+)
+```
+
+`train` is only a dataset loading convention here. No machine-learning split has been applied. Do not sum `pitching_IP_str` as decimal numbers: `5.2` means five innings and two outs. Sum `pitching_outs` instead.
+
+## Reliability and limitations
+
+The schedule is rechecked for the selected season, while box scores are fetched only for missing games, changed schedule metadata/scores, and completed games in the last seven days. This catches delayed and resumed games even when their original dates are older. Historical seasons are frozen after successful completion. Corrections outside the refresh window that do not change schedule metadata require a deliberate re-fetch; see [the scanner guide](docs/SCANNER_GUIDE.md).
+
+Data files and checkpoint state are published in the same Hugging Face commit. A concurrent update causes the commit to fail rather than overwrite another writer's progress. Only affected team tables are downloaded and rewritten. Interrupted uploads resume from the last committed batch. Missing final box scores fail visibly instead of silently marking a season complete.
+
+The API is an external dependency; source coverage and future schema changes can affect a run. A final game with unavailable box-score data blocks that season until the source recovers or the issue is investigated. A full production backfill and authenticated Hub upload require your configured repository and token.
+
+## Tests
+
+```bash
+python -m pip install -r requirements.txt -r requirements-dev.txt
+python -m pytest -q
+```
+
+Tests cover scheduling, year rollover, resume after failures, duplicate/correction handling, stable Parquet schemas, and a captured real MiLB box score.
+
+The [samples directory](samples/README.md) includes five real 2021 games across all three supported levels. See [validation results](docs/VALIDATION.md) for what has been tested and what still requires deployment credentials.

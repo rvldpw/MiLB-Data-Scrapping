@@ -1,0 +1,424 @@
+{
+  "gamePk": 750975,
+  "gameGuid": "eb603a75-f125-4921-a125-4eb524d32b50",
+  "link": "/api/v1.1/game/750975/feed/live",
+  "gameType": "R",
+  "season": "2024",
+  "gameDate": "2024-08-01T16:00:00Z",
+  "officialDate": "2024-08-01",
+  "resumeDate": "2024-08-02T21:30:00Z",
+  "resumeGameDate": "2024-08-02",
+  "status": {
+    "abstractGameState": "Final",
+    "codedGameState": "F",
+    "detailedState": "Final",
+    "statusCode": "F",
+    "startTimeTBD": false,
+    "abstractGameCode": "F"
+  },
+  "teams": {
+    "away": {
+      "team": {
+        "allStarStatus": "N",
+        "id": 402,
+        "name": "Akron RubberDucks",
+        "link": "/api/v1/teams/402",
+        "season": 2024,
+        "venue": {
+          "id": 2740,
+          "name": "Canal Park",
+          "link": "/api/v1/venues/2740"
+        },
+        "teamCode": "akr",
+        "fileCode": "t402",
+        "abbreviation": "AKR",
+        "teamName": "RubberDucks",
+        "locationName": "Akron",
+        "firstYearOfPlay": "1989",
+        "league": {
+          "id": 113,
+          "name": "Eastern League",
+          "link": "/api/v1/league/113"
+        },
+        "division": {
+          "id": 213,
+          "name": "Eastern League Southwest",
+          "link": "/api/v1/divisions/213"
+        },
+        "sport": {
+          "id": 12,
+          "link": "/api/v1/sports/12",
+          "name": "Double-A"
+        },
+        "shortName": "Akron",
+        "parentOrgName": "Cleveland Guardians",
+        "parentOrgId": 114,
+        "franchiseName": "Akron",
+        "clubName": "RubberDucks",
+        "active": true
+      },
+      "leagueRecord": {
+        "wins": 58,
+        "losses": 41,
+        "ties": 0,
+        "pct": ".586"
+      },
+      "score": 1,
+      "isWinner": false,
+      "splitSquad": false,
+      "seriesNumber": 18
+    },
+    "home": {
+      "team": {
+        "allStarStatus": "N",
+        "id": 547,
+        "name": "Harrisburg Senators",
+        "link": "/api/v1/teams/547",
+        "season": 2024,
+        "venue": {
+          "id": 2749,
+          "name": "FNB Field",
+          "link": "/api/v1/venues/2749"
+        },
+        "teamCode": "hbg",
+        "fileCode": "t547",
+        "abbreviation": "HBG",
+        "teamName": "Senators",
+        "locationName": "Harrisburg",
+        "firstYearOfPlay": "1932",
+        "league": {
+          "id": 113,
+          "name": "Eastern League",
+          "link": "/api/v1/league/113"
+        },
+        "division": {
+          "id": 213,
+          "name": "Eastern League Southwest",
+          "link": "/api/v1/divisions/213"
+        },
+        "sport": {
+          "id": 12,
+          "link": "/api/v1/sports/12",
+          "name": "Double-A"
+        },
+        "shortName": "Harrisburg",
+        "parentOrgName": "Washington Nationals",
+        "parentOrgId": 120,
+        "franchiseName": "Harrisburg",
+        "clubName": "Senators",
+        "active": true
+      },
+      "leagueRecord": {
+        "wins": 48,
+        "losses": 51,
+        "ties": 0,
+        "pct": ".485"
+      },
+      "score": 9,
+      "isWinner": true,
+      "splitSquad": false,
+      "seriesNumber": 18
+    }
+  },
+  "linescore": {
+    "currentInning": 9,
+    "currentInningOrdinal": "9th",
+    "inningState": "Top",
+    "inningHalf": "Top",
+    "isTopInning": true,
+    "scheduledInnings": 9,
+    "innings": [
+      {
+        "num": 1,
+        "ordinalNum": "1st",
+        "home": {
+          "runs": 0,
+          "hits": 1,
+          "errors": 0,
+          "leftOnBase": 1
+        },
+        "away": {
+          "runs": 1,
+          "hits": 2,
+          "errors": 0,
+          "leftOnBase": 1
+        }
+      },
+      {
+        "num": 2,
+        "ordinalNum": "2nd",
+        "home": {
+          "runs": 3,
+          "hits": 3,
+          "errors": 0,
+          "leftOnBase": 3
+        },
+        "away": {
+          "runs": 0,
+          "hits": 0,
+          "errors": 1,
+          "leftOnBase": 0
+        }
+      },
+      {
+        "num": 3,
+        "ordinalNum": "3rd",
+        "home": {
+          "runs": 0,
+          "hits": 0,
+          "errors": 1,
+          "leftOnBase": 0
+        },
+        "away": {
+          "runs": 0,
+          "hits": 0,
+          "errors": 0,
+          "leftOnBase": 1
+        }
+      },
+      {
+        "num": 4,
+        "ordinalNum": "4th",
+        "home": {
+          "runs": 3,
+          "hits": 4,
+          "errors": 0,
+          "leftOnBase": 0
+        },
+        "away": {
+          "runs": 0,
+          "hits": 0,
+          "errors": 1,
+          "leftOnBase": 0
+        }
+      },
+      {
+        "num": 5,
+        "ordinalNum": "5th",
+        "home": {
+          "runs": 1,
+          "hits": 3,
+          "errors": 0,
+          "leftOnBase": 2
+        },
+        "away": {
+          "runs": 0,
+          "hits": 0,
+          "errors": 0,
+          "leftOnBase": 0
+        }
+      },
+      {
+        "num": 6,
+        "ordinalNum": "6th",
+        "home": {
+          "runs": 0,
+          "hits": 0,
+          "errors": 0,
+          "leftOnBase": 1
+        },
+        "away": {
+          "runs": 0,
+          "hits": 0,
+          "errors": 0,
+          "leftOnBase": 0
+        }
+      },
+      {
+        "num": 7,
+        "ordinalNum": "7th",
+        "home": {
+          "runs": 0,
+          "hits": 1,
+          "errors": 0,
+          "leftOnBase": 1
+        },
+        "away": {
+          "runs": 0,
+          "hits": 0,
+          "errors": 0,
+          "leftOnBase": 0
+        }
+      },
+      {
+        "num": 8,
+        "ordinalNum": "8th",
+        "home": {
+          "runs": 2,
+          "hits": 3,
+          "errors": 0,
+          "leftOnBase": 2
+        },
+        "away": {
+          "runs": 0,
+          "hits": 0,
+          "errors": 0,
+          "leftOnBase": 0
+        }
+      },
+      {
+        "num": 9,
+        "ordinalNum": "9th",
+        "home": {
+          "hits": 0,
+          "errors": 0,
+          "leftOnBase": 0
+        },
+        "away": {
+          "runs": 0,
+          "hits": 1,
+          "errors": 0,
+          "leftOnBase": 1
+        }
+      }
+    ],
+    "teams": {
+      "home": {
+        "runs": 9,
+        "hits": 15,
+        "errors": 1,
+        "leftOnBase": 10,
+        "isWinner": true
+      },
+      "away": {
+        "runs": 1,
+        "hits": 3,
+        "errors": 2,
+        "leftOnBase": 3,
+        "isWinner": false
+      }
+    },
+    "defense": {
+      "pitcher": {
+        "id": 668720,
+        "fullName": "Todd Peterson",
+        "link": "/api/v1/people/668720"
+      },
+      "catcher": {
+        "id": 667690,
+        "fullName": "C.J. Stubbs",
+        "link": "/api/v1/people/667690"
+      },
+      "first": {
+        "id": 674677,
+        "fullName": "Trey Harris",
+        "link": "/api/v1/people/674677"
+      },
+      "second": {
+        "id": 687751,
+        "fullName": "Cortland Lawson",
+        "link": "/api/v1/people/687751"
+      },
+      "third": {
+        "id": 700685,
+        "fullName": "Paul Witt",
+        "link": "/api/v1/people/700685"
+      },
+      "shortstop": {
+        "id": 691183,
+        "fullName": "Kevin Made",
+        "link": "/api/v1/people/691183"
+      },
+      "left": {
+        "id": 660650,
+        "fullName": "D\u00e9rmis Garcia",
+        "link": "/api/v1/people/660650"
+      },
+      "center": {
+        "id": 695734,
+        "fullName": "Daylen Lile",
+        "link": "/api/v1/people/695734"
+      },
+      "right": {
+        "id": 682707,
+        "fullName": "Jeremy De La Rosa",
+        "link": "/api/v1/people/682707"
+      },
+      "batter": {
+        "id": 687751,
+        "fullName": "Cortland Lawson",
+        "link": "/api/v1/people/687751"
+      },
+      "onDeck": {
+        "id": 680963,
+        "fullName": "Cody Wilson",
+        "link": "/api/v1/people/680963"
+      },
+      "inHole": {
+        "id": 695734,
+        "fullName": "Daylen Lile",
+        "link": "/api/v1/people/695734"
+      },
+      "battingOrder": 8,
+      "team": {
+        "id": 547,
+        "name": "Harrisburg Senators",
+        "link": "/api/v1/teams/547"
+      }
+    },
+    "offense": {
+      "batter": {
+        "id": 687627,
+        "fullName": "Kody Huff",
+        "link": "/api/v1/people/687627"
+      },
+      "onDeck": {
+        "id": 677570,
+        "fullName": "Aaron Bracho",
+        "link": "/api/v1/people/677570"
+      },
+      "inHole": {
+        "id": 678413,
+        "fullName": "Alexfri Planez",
+        "link": "/api/v1/people/678413"
+      },
+      "third": {
+        "id": 690984,
+        "fullName": "Petey Halpin",
+        "link": "/api/v1/people/690984"
+      },
+      "pitcher": {
+        "id": 689557,
+        "fullName": "Zane Morehouse",
+        "link": "/api/v1/people/689557"
+      },
+      "battingOrder": 4,
+      "team": {
+        "id": 402,
+        "name": "Akron RubberDucks",
+        "link": "/api/v1/teams/402"
+      }
+    },
+    "balls": 0,
+    "strikes": 0,
+    "outs": 3
+  },
+  "venue": {
+    "id": 2749,
+    "name": "FNB Field",
+    "link": "/api/v1/venues/2749"
+  },
+  "content": {
+    "link": "/api/v1/game/750975/content"
+  },
+  "isTie": false,
+  "gameNumber": 1,
+  "publicFacing": true,
+  "doubleHeader": "N",
+  "gamedayType": "Y",
+  "tiebreaker": "N",
+  "calendarEventID": "44-750975-2024-08-01",
+  "seasonDisplay": "2024",
+  "dayNight": "day",
+  "description": "Suspended from 8/1",
+  "scheduledInnings": 9,
+  "reverseHomeAwayStatus": false,
+  "inningBreakLength": 120,
+  "gamesInSeries": 6,
+  "seriesGameNumber": 3,
+  "seriesDescription": "Regular Season",
+  "recordSource": "S",
+  "ifNecessary": "N",
+  "ifNecessaryDescription": "Normal Game",
+  "sport_id": 12
+}

@@ -1,27 +1,53 @@
-# scanner/ module guide
+# Scanner configuration and recovery
 
-| File | Role |
-|---|---|
-| `config.py` | Season window, levels, env-var toggles. No network calls — safe to import anywhere. |
-| `fetch.py` | All MLB Stats API access. Season totals (`pull_season_level`), bios (`fetch_player_bios`), and per-game logs (`fetch_game_logs`). |
-| `metrics.py` | Derived rate stats (AVG/OBP/ERA/WHIP/etc.) computed from the raw counting stats `fetch.py` returns. |
-| `sheets_sync.py` | All Google Sheets I/O, via the Apps Script Web App. Push, read-back, and the two independent completion-state helpers (`get_completed_seasons` / `mark_season_complete`, both take a `kind` so different pipelines don't collide). |
-| `build.py` | Orchestrates the **season-summary** pipeline: decide what's new → pull → split into Batter/Pitcher/Catcher → sync. |
-| `game_log.py` | Orchestrates the **game-by-game** pipeline. Runs after `build.py`'s season sync succeeds, reusing that run's active-player set but reading historical (player, season, level) targets back from the Sheet itself (see the module docstring for why). |
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `START_SEASON` | `2021` | First season in a new dataset |
+| `SPORT_IDS` | `12,13,14` | AA, High-A, Single-A |
+| `REFRESH_DAYS` | `7` | Recent completed game dates refreshed once per UTC day |
+| `CHECKPOINT_GAMES` | `100` | Successfully parsed games per atomic Hub commit; 1–100 |
+| `MAX_GAMES_PER_RUN` | `0` | Attempt limit; zero means no count limit |
+| `MAX_RUN_MINUTES` | `150` | Soft stop before fetching another box score |
+| `HF_REPO_ID` | required for Hub | Dataset owner/name |
+| `HF_TOKEN` | required for Hub | Write token, provided through secrets |
+| `HF_PRIVATE` | `true` | Visibility only when creating a repository |
 
-## Env vars this package reads
+The workflow has a 180-minute hard timeout, leaving time after the 150-minute fetch budget for a final checkpoint. A slow request, retry, or upload can exceed the soft budget; the previous checkpoint remains safe if GitHub ends the job. Limits never mark an unfinished season complete.
 
-| Var | Default | Effect |
-|---|---|---|
-| `APPS_SCRIPT_URL` | *(unset)* | Sheets sync is a no-op entirely if this or the secret below is unset. |
-| `APPS_SCRIPT_SECRET` | *(unset)* | Must match the `SHARED_SECRET` script property in the Apps Script project. |
-| `ENRICH_WITH_BIO` | `true` | Set `false` to skip the per-player bio/age lookup and speed up a run. |
-| `GAME_LOG_ENABLED` | `true` | Set `false` to skip the game-log pipeline entirely and only sync season summaries. |
-| `MAX_GAMELOG_SEASONS_PER_RUN` | `1` | How many not-yet-synced *historical* game-log seasons to backfill per run. Current season is always fetched in full regardless of this value. |
+Changing the stored scope (`START_SEASON`, `SPORT_IDS`, or game types) is rejected to prevent silently mixing incompatible progress. Use a fresh dataset or local preview directory for a different scope.
 
-## Adding a new derived stat
-Add it in `metrics.py`'s `add_batting_rates` / `add_pitching_rates`, guarding any
-division against a zero denominator with `np.where(denom > 0, ..., np.nan)` —
-`sheets_sync.push_rows` cleans up any stray `NaN`/`inf` before the Sheets push, but
-it's still the right place to keep raw box-score counts separate from computed
-rates.
+## Daily selection
+
+1. Select the earliest uninitialized year from 2021 through the current UTC year.
+2. Before a new year, reconcile any previously current year that has not been finalized.
+3. Fetch final-game schedules for each selected level. Deduplicate resumed-game schedule entries by game ID.
+4. Fetch missing/changed box scores; for the current year also refresh recent games.
+5. Commit each batch's team files and state together.
+6. Only mark a season initialized/final after every required game succeeds.
+7. Advance no more than one backfill/finalization season per UTC day. After catching up, keep refreshing the current year.
+
+The year is based on UTC, not a fixed 2026 setting. At rollover, finalizing the previous year uses that day's season slot; the new year starts on the next run. Empty current-year schedules are valid during the off-season. Empty historical coverage for any configured level is treated as an error.
+
+## Data updates
+
+Each refreshed game replaces all its previous player rows in the affected team tables. This removes stale rows from scoring corrections instead of only appending. The row key includes `game_pk`, so two games on the same date remain separate. Transfers appear under the team represented in that game's box score. Historical league IDs/names can differ from today's league names.
+
+Suspended or postponed games are not collected until the schedule reports them as final. Rechecking the complete selected-season schedule catches old dates that become final. Cancelled games have no game-stat rows. An already finalized historical season is not polled indefinitely.
+
+## Recovery
+
+- **Network failure / upload conflict:** rerun unchanged. Hub commits use a pinned revision and reject competing writes.
+- **Malformed or unavailable final box score:** inspect the game ID in logs. The scanner keeps successful games but will not advance until the missing data is resolved.
+- **Re-fetch an old game deliberately:** stop concurrent jobs; in the dataset, remove only that game's entry from `state/YEAR.json` and set that year's `initialized` and `final_complete` to `false` in `state/index.json`. Wait until the next UTC day if the daily gate was already used. Retain its Parquet rows; the new game rows will replace them. Only do this for a game whose teams/league partitions have not changed; for a partition correction, preserve its old `paths` and instead replace its `signature` with `"force-refresh"`.
+- **Re-fetch a finalized season:** stop jobs; set that year's `initialized` and `final_complete` to `false`, and set every game's `signature` in its state file to `"force-refresh"` while retaining `paths`. The next eligible run re-downloads that season. Do not delete data files independently of state.
+
+Dataset README and catalog files are generated. Make persistent documentation changes in `scanner/dataset.py`, not by editing the generated Hub README.
+
+## Modules
+
+- `fetch.py`: retried public schedule/box-score requests; no credentials sent to MLB.
+- `game_log.py` / `schema.py`: per-game extraction and typed Parquet columns.
+- `state.py`: season selection and per-game refresh decisions.
+- `dataset.py`: team table replacement and viewer metadata.
+- `storage.py`: local storage or atomic Hugging Face commits.
+- `build.py`: orchestration and checkpoints.

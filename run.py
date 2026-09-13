@@ -1,37 +1,47 @@
 #!/usr/bin/env python3
-"""Entry point: `python run.py`.
-
-Locally: exports Batter/Pitcher/Catcher into ./output/milb_prospect_scan_delta.xlsx.
-If APPS_SCRIPT_URL and APPS_SCRIPT_SECRET are set (as GitHub Actions secrets, or in
-your local shell), also syncs to the Google Sheets databank and skips any season
-already marked complete there.
-"""
+"""Daily Hugging Face sync, or an isolated local preview with --local-dir."""
+import argparse
+from dataclasses import replace
+import json
 import logging
-import sys
+import os
+from pathlib import Path
 
-from scanner import build, config
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)-7s | %(message)s",
-    datefmt="%H:%M:%S",
-)
-logger = logging.getLogger("milb_scanner")
+from scanner.build import run
+from scanner.config import Settings
+from scanner.fetch import MLBClient
+from scanner.storage import HubStore, LocalStore
 
 
-def main() -> int:
-    logger.info(
-        "Seasons in scope: %s-%s | Levels: %s | Sheets sync: %s",
-        config.SEASON_START, config.SEASON_END, list(config.LEVELS),
-        "ON" if config.SHEETS_SYNC_ENABLED else "OFF (no APPS_SCRIPT_URL/SECRET set)",
-    )
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--local-dir", type=Path, help="Write here instead of Hugging Face; keeps its own progress")
+    parser.add_argument("--max-games", type=int, help="Limit box-score attempts this run; leave the season incomplete")
+    parser.add_argument("--start-season", type=int, help="Initial season for a NEW dataset (default 2021)")
+    args = parser.parse_args()
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
     try:
-        build.run()
+        settings = Settings.from_env()
+        if args.max_games is not None:
+            settings = replace(settings, max_games=args.max_games)
+        if args.start_season is not None:
+            settings = replace(settings, start_season=args.start_season)
+        store = LocalStore(args.local_dir) if args.local_dir else HubStore(
+            os.getenv("HF_REPO_ID"), os.getenv("HF_TOKEN"),
+            private=os.getenv("HF_PRIVATE", "true").lower() != "false")
+        summary = run(settings, MLBClient(settings), store)
+        output = Path("output")
+        output.mkdir(exist_ok=True)
+        (output / "run-summary.json").write_text(json.dumps(summary, indent=2) + "\n")
+        logging.info("Result: %s", summary)
+        if os.getenv("GITHUB_STEP_SUMMARY"):
+            with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as file:
+                file.write("## MiLB game logs\n\n```json\n" + json.dumps(summary, indent=2) + "\n```\n")
+        return 0
     except Exception:
-        logger.exception("Run failed")
+        logging.exception("Run failed; next run resumes from the last successful checkpoint")
         return 1
-    return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    raise SystemExit(main())
