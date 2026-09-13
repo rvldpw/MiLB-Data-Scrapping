@@ -95,5 +95,5 @@ def run(settings, client, store, now=None):
                "games_fetched": fetched, "stored_games": len(game_index),
                "scheduled_final_games": len(final_games), "failures": len(failures)}
     if failures:
-        raise IncompleteRun(f"{len(failures)} games failed for {season}; successful games saved, retry next run")
+        log.warning("%s games failed for %s; successful games saved, retry next run", len(failures), season)
     return summary
