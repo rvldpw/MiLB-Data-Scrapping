@@ -44,6 +44,8 @@ player_bio = bio.get_bios([pid]).iloc[0].to_dict()
 identity(names[pid], f"{latest['team_name']} · {latest['player_position']} · {ctx.description}", f"{int(line['G']):02d} G",
          player_photo_html(pid, 72), bio.status_badge_html(player_bio.get("status", "Other / Unknown")))
 bio_cards = []
+if player_bio.get("current_team"):
+    bio_cards.append({"label": "Currently with", "value": player_bio["current_team"], "sub": player_bio.get("current_level") or ""})
 if pd.notna(player_bio.get("age")):
     bio_cards.append({"label": "Age", "value": f"{int(player_bio['age'])}"})
 if player_bio.get("height_cm"):
