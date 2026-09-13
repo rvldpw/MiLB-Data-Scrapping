@@ -67,6 +67,8 @@ def test_all_pages_render_sample():
  from streamlit.testing.v1 import AppTest
  root=Path(__file__).resolve().parents[1]
  app=AppTest.from_file(str(root/'Home.py'),default_timeout=90).run()
+ src=[s for s in app.sidebar.selectbox if s.label=='Data source']
+ src[0].set_value('Included sample').run()
  assert not app.exception
  for page in ['1_Player_Dashboard','2_Team_Dashboard','3_Trade_Simulator','4_Metric_Guide']:
   app.switch_page('pages/'+page+'.py').run()
@@ -76,6 +78,8 @@ def test_pitching_and_scenario_interactions():
  from streamlit.testing.v1 import AppTest
  root=Path(__file__).resolve().parents[1]
  app=AppTest.from_file(str(root/'Home.py'),default_timeout=90).run()
+ src=[s for s in app.sidebar.selectbox if s.label=='Data source']
+ src[0].set_value('Included sample').run()
  app.switch_page('pages/1_Player_Dashboard.py').run()
  app.segmented_control[0].set_value('Pitching').run()
  assert not app.exception
