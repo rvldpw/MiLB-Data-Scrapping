@@ -43,7 +43,24 @@ population = player_table(src, kind)
 player_bio = bio.get_bios([pid]).iloc[0].to_dict()
 identity(names[pid], f"{latest['team_name']} · {latest['player_position']} · {ctx.description}", f"{int(line['G']):02d} G",
          player_photo_html(pid, 72), bio.status_badge_html(player_bio.get("status", "Other / Unknown")))
-st.caption("Status is a live MLB Stats API lookup, separate from the game logs — 'Active – MiLB' means still developing with a minor-league affiliate; 'Active – MLB' means on a major-league roster today.")
+bio_cards = []
+if pd.notna(player_bio.get("age")):
+    bio_cards.append({"label": "Age", "value": f"{int(player_bio['age'])}"})
+if player_bio.get("height_cm"):
+    bio_cards.append({"label": "Height", "value": f"{player_bio['height_cm']} cm", "sub": player_bio.get("height") or ""})
+if player_bio.get("weight_kg"):
+    bio_cards.append({"label": "Weight", "value": f"{player_bio['weight_kg']} kg", "sub": f"{player_bio.get('weight_lb')} lb"})
+if player_bio.get("bats") or player_bio.get("throws"):
+    bio_cards.append({"label": "Bats / Throws", "value": f"{player_bio.get('bats') or '—'} / {player_bio.get('throws') or '—'}"})
+if player_bio.get("birthplace"):
+    bio_cards.append({"label": "Birthplace", "value": player_bio["birthplace"]})
+if player_bio.get("debut_date"):
+    bio_cards.append({"label": "MLB debut", "value": player_bio["debut_date"]})
+if bio_cards:
+    stat_cards(bio_cards, cols=min(len(bio_cards), 6))
+else:
+    st.caption("No live bio record found for this player ID yet.")
+st.caption("Bio and status come from a live MLB Stats API lookup, separate from the game logs — 'Active – MiLB' means still developing with a minor-league affiliate.")
 sample_note(line, kind)
 headline = ["OPS", "OBP", "ISO", "K_pct"] if kind == "batting" else ["ERA", "WHIP", "K_BB_pct", "IP"]
 stat_cards([{"label": label(k), "value": fmt(line[k], k), "sub": (f"Cohort {fmt(cohort.get(k), k)}" if k != "IP" else "Baseball notation · .2 = two outs")} for k in headline])
