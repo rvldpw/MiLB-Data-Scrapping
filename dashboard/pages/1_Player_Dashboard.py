@@ -15,11 +15,11 @@ from data_loader import LEVEL_LABEL, load_data
 from metrics import (batting_line, fip, home_away_split, league_batting_context, league_pitching_context,
                       monthly_split, ops_plus, percentile_rank, pitching_line, radar_metrics, rolling_rate,
                       season_split, stat_sheet, wrc_plus)
-from ui import inject_mobile_css
+from ui import BAD, GOOD, download_button, hero, inject_mobile_css, section, stat_cards
 
 st.set_page_config(page_title="Player Analyst Dashboard", page_icon="🧢", layout="wide", initial_sidebar_state="expanded")
 inject_mobile_css()
-st.title("🧢 Player Analyst Dashboard")
+hero("🧢", "Player Analyst Dashboard", "Search, filter, and dig into any hitter or pitcher in the dataset.")
 
 batting, pitching = load_data()
 
@@ -49,7 +49,6 @@ else:
     pool = pool[pool["role"].isin(sel_role)] if sel_role else pool
 
 candidates = pool[["player_id", "player_full_name"]].drop_duplicates()
-
 st.sidebar.caption(f"{len(candidates)} players match the filters above.")
 
 bios_df = pd.DataFrame()
@@ -81,123 +80,142 @@ names = candidates.sort_values("player_full_name")["player_full_name"].tolist()
 picked_name = st.sidebar.selectbox("Search player", names)
 player_id = candidates[candidates["player_full_name"] == picked_name]["player_id"].iloc[0]
 
-# ============================= player data ==============================
-pdf_all = src[src["player_id"] == player_id].copy()
-pdf = pdf_all[pdf_all["season"].isin(sel_seasons)]
-if pdf.empty:
-    pdf = pdf_all
+compare_on = st.sidebar.checkbox("🆚 Compare with another player")
+compare_name = None
+if compare_on:
+    other_names = [n for n in names if n != picked_name]
+    compare_name = st.sidebar.selectbox("Compare against", other_names) if other_names else None
 
-latest_row = pdf.sort_values("game_date").iloc[-1]
-level = latest_row["team_level"]
-lg_ctx_df = (league_batting_context(batting[batting["team_level"] == level]) if kind == "batting"
-             else league_pitching_context(pitching[pitching["team_level"] == level]))
+# ============================= helpers ==============================
 
-player_bio = bio.get_bios([player_id]).iloc[0].to_dict() if True else {}
+def load_player(pid, seasons):
+    all_df = src[src["player_id"] == pid].copy()
+    filt = all_df[all_df["season"].isin(seasons)]
+    return all_df, (filt if not filt.empty else all_df)
+
+
+def compute(pid, seasons):
+    pdf_all, pdf = load_player(pid, seasons)
+    latest = pdf.sort_values("game_date").iloc[-1]
+    lvl = latest["team_level"]
+    lg_ctx_df = (league_batting_context(batting[batting["team_level"] == lvl]) if kind == "batting"
+                 else league_pitching_context(pitching[pitching["team_level"] == lvl]))
+    line = batting_line(pdf) if kind == "batting" else pitching_line(pdf)
+    lg_row = lg_ctx_df[lg_ctx_df["season"] == pdf["season"].max()]
+    lg_line = lg_row.iloc[0].to_dict() if len(lg_row) else lg_ctx_df.iloc[-1].to_dict()
+    return pdf_all, pdf, latest, lvl, line, lg_line
+
+
+pdf_all, pdf, latest_row, level, line, lg_line = compute(player_id, sel_seasons)
+player_bio = bio.get_bios([player_id]).iloc[0].to_dict()
 
 # --- header card -----------------------------------------------------------
-head_l, head_r = st.columns([1, 4])
-with head_l:
-    st.markdown(player_photo_html(player_id, size=110), unsafe_allow_html=True)
-with head_r:
-    st.markdown(f"### {picked_name}")
-    age_txt = f"Age **{int(player_bio['age'])}**" if pd.notna(player_bio.get("age")) else "Age —"
-    status_html = bio.status_badge_html(player_bio.get("status", "Other / Unknown"))
-    debut = player_bio.get("debut_date")
-    debut_txt = f"MLB debut **{debut}**" if debut else "No MLB debut on record"
-    st.markdown(
-        f"{team_logo_html(latest_row['team_id'], 26)} **{latest_row['team_name']}** &nbsp;·&nbsp; "
-        f"Position: **{latest_row['player_position']}** &nbsp;·&nbsp; Level: **{LEVEL_LABEL.get(level, level)}** "
-        f"&nbsp;·&nbsp; {age_txt} &nbsp;·&nbsp; {status_html}",
-        unsafe_allow_html=True,
-    )
-    st.markdown(
-        f"{debut_txt} &nbsp;·&nbsp; Seasons in this dataset: **{sorted(pdf_all['season'].unique())[0]}"
-        f"–{sorted(pdf_all['season'].unique())[-1]}**"
-        + (f" &nbsp;·&nbsp; Currently with **{player_bio['current_team']}**" if player_bio.get("current_team") else ""),
-        unsafe_allow_html=True,
-    )
+age_txt = f"Age <b>{int(player_bio['age'])}</b> · " if pd.notna(player_bio.get("age")) else ""
+debut = player_bio.get("debut_date")
+debut_txt = f"MLB debut <b>{debut}</b>" if debut else "No MLB debut on record"
+cur_team_txt = f" · Currently with <b>{player_bio['current_team']}</b>" if player_bio.get("current_team") else ""
+st.markdown(
+    f"<div class='player-card'>{player_photo_html(player_id, size=104)}"
+    f"<div><p class='player-name'>{picked_name}</p>"
+    f"<div class='player-meta'>{team_logo_html(latest_row['team_id'], 22)} <b>{latest_row['team_name']}</b> · "
+    f"Position <b>{latest_row['player_position']}</b> · Level <b>{LEVEL_LABEL.get(level, level)}</b> · "
+    f"{age_txt}{bio.status_badge_html(player_bio.get('status', 'Other / Unknown'))}<br>"
+    f"{debut_txt}{cur_team_txt} · Seasons in dataset: <b>{sorted(pdf_all['season'].unique())[0]}"
+    f"–{sorted(pdf_all['season'].unique())[-1]}</b></div></div></div>",
+    unsafe_allow_html=True,
+)
 
-st.divider()
-
-# --- headline slash line / pitching line ------------------------------------
+# --- headline cards ----------------------------------------------------
 if kind == "batting":
-    line = batting_line(pdf)
-    lg_line = lg_ctx_df[lg_ctx_df["season"] == pdf["season"].max()]
-    lg_line = (lg_line.iloc[0].to_dict() if len(lg_line) else lg_ctx_df.iloc[-1].to_dict())
     wrc = wrc_plus(line, lg_line)
     opsp = ops_plus(line, lg_line)
-
-    m = st.columns(4)
-    m[0].metric("G", int(line["G"]))
-    m[1].metric("AVG / OBP / SLG", f"{line['AVG']:.3f}/{line['OBP']:.3f}/{line['SLG']:.3f}" if pd.notna(line["AVG"]) else "—")
-    m[2].metric("OPS", f"{line['OPS']:.3f}" if pd.notna(line["OPS"]) else "—")
-    m[3].metric("wRC+", f"{wrc:.0f}" if pd.notna(wrc) else "—", help="100 = league average at this level")
-    m2 = st.columns(4)
-    m2[0].metric("BB% / K%", f"{100*line['BB_pct']:.1f}% / {100*line['K_pct']:.1f}%")
-    m2[1].metric("ISO / BABIP", f"{line['ISO']:.3f} / {line['BABIP']:.3f}" if pd.notna(line["ISO"]) else "—")
-    m2[2].metric("OPS+", f"{opsp:.0f}" if pd.notna(opsp) else "—")
-    m2[3].metric("HR / RBI / SB", f"{int(line['HR'])}/{int(line['RBI'])}/{int(line['SB'])}")
+    stat_cards([
+        {"label": "G", "value": int(line["G"])},
+        {"label": "AVG/OBP/SLG", "value": f"{line['AVG']:.3f}/{line['OBP']:.3f}/{line['SLG']:.3f}" if pd.notna(line["AVG"]) else "—"},
+        {"label": "OPS", "value": f"{line['OPS']:.3f}" if pd.notna(line["OPS"]) else "—"},
+        {"label": "wRC+", "value": f"{wrc:.0f}" if pd.notna(wrc) else "—",
+         "sub": ("above avg" if wrc >= 100 else "below avg") if pd.notna(wrc) else None,
+         "sub_color": GOOD if pd.notna(wrc) and wrc >= 100 else BAD},
+    ])
+    stat_cards([
+        {"label": "BB% / K%", "value": f"{100*line['BB_pct']:.1f}% / {100*line['K_pct']:.1f}%"},
+        {"label": "ISO / BABIP", "value": f"{line['ISO']:.3f} / {line['BABIP']:.3f}" if pd.notna(line["ISO"]) else "—"},
+        {"label": "OPS+", "value": f"{opsp:.0f}" if pd.notna(opsp) else "—"},
+        {"label": "HR / RBI / SB", "value": f"{int(line['HR'])}/{int(line['RBI'])}/{int(line['SB'])}"},
+    ])
 else:
-    line = pitching_line(pdf)
-    lg_line = lg_ctx_df[lg_ctx_df["season"] == pdf["season"].max()]
-    lg_line = (lg_line.iloc[0].to_dict() if len(lg_line) else lg_ctx_df.iloc[-1].to_dict())
     fip_val = fip(line, lg_line)
-
-    m = st.columns(4)
-    m[0].metric("G (GS)", f"{int(line['G'])} ({int(line['GS'])})")
-    m[1].metric("IP", f"{line['IP']:.1f}")
-    m[2].metric("ERA / FIP", f"{line['ERA']:.2f} / {fip_val:.2f}" if pd.notna(line["ERA"]) else "—")
-    m[3].metric("WHIP", f"{line['WHIP']:.2f}" if pd.notna(line["WHIP"]) else "—")
-    m2 = st.columns(4)
-    m2[0].metric("K/9 / BB/9", f"{line['K9']:.1f} / {line['BB9']:.1f}" if pd.notna(line["K9"]) else "—")
-    m2[1].metric("K-BB%", f"{100*(line['K_pct']-line['BB_pct']):.1f}%")
-    m2[2].metric("HR/9", f"{line['HR9']:.2f}" if pd.notna(line["HR9"]) else "—")
-    m2[3].metric("W-L (SV)", f"{int(line['W'])}-{int(line['L'])} ({int(line['SV'])})")
+    stat_cards([
+        {"label": "G (GS)", "value": f"{int(line['G'])} ({int(line['GS'])})"},
+        {"label": "IP", "value": f"{line['IP']:.1f}"},
+        {"label": "ERA / FIP", "value": f"{line['ERA']:.2f} / {fip_val:.2f}" if pd.notna(line["ERA"]) else "—"},
+        {"label": "WHIP", "value": f"{line['WHIP']:.2f}" if pd.notna(line["WHIP"]) else "—"},
+    ])
+    kbb = 100 * (line["K_pct"] - line["BB_pct"])
+    stat_cards([
+        {"label": "K/9 / BB/9", "value": f"{line['K9']:.1f} / {line['BB9']:.1f}" if pd.notna(line["K9"]) else "—"},
+        {"label": "K-BB%", "value": f"{kbb:.1f}%", "sub": ("strong" if kbb >= 15 else "shaky") if pd.notna(kbb) else None,
+         "sub_color": GOOD if kbb >= 15 else BAD},
+        {"label": "HR/9", "value": f"{line['HR9']:.2f}" if pd.notna(line["HR9"]) else "—"},
+        {"label": "W-L (SV)", "value": f"{int(line['W'])}-{int(line['L'])} ({int(line['SV'])})"},
+    ])
 
 st.caption(f"Rates benchmarked against the {int(lg_line.get('season', pdf['season'].max()))} {LEVEL_LABEL.get(level, level)} league average.")
 
-st.divider()
-
-# --- scouting radar + full stat sheet ---------------------------------------
+# --- scouting radar + full stat sheet, with optional comparison -------------
 r1, r2 = st.columns([1, 1])
 with r1:
-    st.subheader("🎯 Scouting radar")
-    st.caption("Each axis is a percentile (0-100) vs. every player at this level in the selected season(s).")
-    # Compute every candidate's line once (not once per axis) then derive all percentiles from it.
-    pop_lines = []
+    section("🎯", "Scouting radar", "Each axis is a percentile (0-100) vs. every player at this level in the selected season(s).")
     min_sample = "PA" if kind == "batting" else "IP"
-    for pid, g in pool.groupby("player_id"):
-        ln = batting_line(g) if kind == "batting" else pitching_line(g)
-        pop_lines.append(ln)
+    pop_lines = [batting_line(g) if kind == "batting" else pitching_line(g) for _, g in pool.groupby("player_id")]
     pop_df = pd.DataFrame(pop_lines)
     if not pop_df.empty:
         pop_df = pop_df[pop_df[min_sample] >= (10 if kind == "batting" else 3)]
     if kind == "pitching" and not pop_df.empty:
         pop_df["K_BB_pct"] = pop_df["K_pct"] - pop_df["BB_pct"]
 
-    axes, vals = [], []
-    for label, key, invert in radar_metrics(kind):
-        col = "K_BB_pct" if key is None else key
-        v = (line["K_pct"] - line["BB_pct"]) if key is None else line[key]
-        pct = percentile_rank(pop_df[col], v) if not pop_df.empty and col in pop_df else np.nan
-        pct = 100 - pct if invert and pd.notna(pct) else pct
-        axes.append(label)
-        vals.append(pct if pd.notna(pct) else 50)
+    def radar_values(ln):
+        axes, vals = [], []
+        for label, key, invert in radar_metrics(kind):
+            col = "K_BB_pct" if key is None else key
+            v = (ln["K_pct"] - ln["BB_pct"]) if key is None else ln[key]
+            pct = percentile_rank(pop_df[col], v) if not pop_df.empty and col in pop_df else np.nan
+            pct = 100 - pct if invert and pd.notna(pct) else pct
+            axes.append(label); vals.append(pct if pd.notna(pct) else 50)
+        return axes, vals
+
+    axes, vals = radar_values(line)
     fig = go.Figure()
-    fig.add_trace(go.Scatterpolar(r=vals + [vals[0]], theta=axes + [axes[0]], fill="toself", name=picked_name))
-    fig.add_trace(go.Scatterpolar(r=[50] * (len(axes) + 1), theta=axes + [axes[0]], line=dict(dash="dot"), name="League avg"))
+    fig.add_trace(go.Scatterpolar(r=vals + [vals[0]], theta=axes + [axes[0]], fill="toself", name=picked_name,
+                                   line=dict(color="#f97316")))
+    if compare_on and compare_name:
+        cmp_id = candidates[candidates["player_full_name"] == compare_name]["player_id"].iloc[0]
+        _, cmp_pdf, _, _, cmp_line, _ = compute(cmp_id, sel_seasons)
+        caxes, cvals = radar_values(cmp_line)
+        fig.add_trace(go.Scatterpolar(r=cvals + [cvals[0]], theta=caxes + [caxes[0]], fill="toself", name=compare_name,
+                                       line=dict(color="#38bdf8")))
+    else:
+        fig.add_trace(go.Scatterpolar(r=[50] * (len(axes) + 1), theta=axes + [axes[0]], line=dict(dash="dot", color="#8b96ad"), name="League avg"))
     fig.update_layout(polar=dict(radialaxis=dict(range=[0, 100], visible=True)), showlegend=True,
-                       margin=dict(l=30, r=30, t=20, b=20), height=380)
+                       margin=dict(l=30, r=30, t=20, b=20), height=380,
+                       paper_bgcolor="rgba(0,0,0,0)", font_color="#e5e9f0")
     st.plotly_chart(fig, use_container_width=True)
 
 with r2:
-    st.subheader("📋 Full stat sheet")
-    st.dataframe(stat_sheet(line, lg_line, kind), hide_index=True, use_container_width=True, height=380)
+    section("📋", "Full stat sheet")
+    sheet = stat_sheet(line, lg_line, kind)
+    if compare_on and compare_name:
+        cmp_id = candidates[candidates["player_full_name"] == compare_name]["player_id"].iloc[0]
+        _, _, _, _, cmp_line, cmp_lg = compute(cmp_id, sel_seasons)
+        cmp_sheet = stat_sheet(cmp_line, cmp_lg, kind)
+        sheet[compare_name] = cmp_sheet["Value"]
+    st.dataframe(sheet, hide_index=True, use_container_width=True, height=380)
+    download_button(sheet, f"{picked_name.replace(' ', '_')}_stat_sheet.csv")
 
 st.divider()
 
 # --- growth / trend section -------------------------------------------------
-st.subheader("📈 Growth & form")
+section("📈", "Growth & form")
 tab1, tab2, tab3, tab4 = st.tabs(["Rolling form", "Month by month", "Season over season", "Home vs. away"])
 
 with tab1:
@@ -211,35 +229,29 @@ with tab1:
         fig.add_hline(y=lg_val, line_dash="dot", annotation_text="league avg", opacity=0.6)
         if kind == "pitching":
             fig.update_yaxes(autorange="reversed", title="ERA (lower is better)")
+        fig.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font_color="#e5e9f0")
         st.plotly_chart(fig, use_container_width=True)
 
 with tab2:
     ms = monthly_split(pdf, kind)
-    if kind == "batting":
-        fig = px.bar(ms, x="month", y="wOBA", title="wOBA by month")
-        st.plotly_chart(fig, use_container_width=True)
-        st.dataframe(
-            ms[["month", "G", "PA", "AVG", "OBP", "SLG", "wOBA", "BB_pct", "K_pct"]]
-            .round(3).rename(columns={"BB_pct": "BB%", "K_pct": "K%"}),
-            hide_index=True, use_container_width=True,
-        )
-    else:
-        fig = px.bar(ms, x="month", y="ERA", title="ERA by month")
-        st.plotly_chart(fig, use_container_width=True)
-        st.dataframe(
-            ms[["month", "G", "IP", "ERA", "WHIP", "K9", "BB9"]].round(2),
-            hide_index=True, use_container_width=True,
-        )
+    y = "wOBA" if kind == "batting" else "ERA"
+    fig = px.bar(ms, x="month", y=y, title=f"{y} by month")
+    fig.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font_color="#e5e9f0")
+    st.plotly_chart(fig, use_container_width=True)
+    cols = (["month", "G", "PA", "AVG", "OBP", "SLG", "wOBA", "BB_pct", "K_pct"] if kind == "batting"
+            else ["month", "G", "IP", "ERA", "WHIP", "K9", "BB9"])
+    st.dataframe(ms[cols].round(3), hide_index=True, use_container_width=True)
 
 with tab3:
-    ss = season_split(pdf_all, kind)  # full career on file, not just the season filter
+    ss = season_split(pdf_all, kind)
     if len(ss) < 2:
         st.info("Only one season on file for this player — nothing to compare yet.")
     else:
         y = "wOBA" if kind == "batting" else "ERA"
         fig = go.Figure()
-        fig.add_trace(go.Scatter(x=ss["season"], y=ss[y], mode="lines+markers", name=y))
-        fig.update_layout(title=f"Career {y} trend across seasons on file", xaxis_title="Season", yaxis_title=y)
+        fig.add_trace(go.Scatter(x=ss["season"], y=ss[y], mode="lines+markers", name=y, line=dict(color="#f97316")))
+        fig.update_layout(title=f"Career {y} trend across seasons on file", xaxis_title="Season", yaxis_title=y,
+                           paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font_color="#e5e9f0")
         if kind == "pitching":
             fig.update_yaxes(autorange="reversed")
         st.plotly_chart(fig, use_container_width=True)
@@ -253,7 +265,9 @@ with tab4:
         st.info("No home/away data for this selection.")
     else:
         y = "OPS" if kind == "batting" else "ERA"
-        fig = px.bar(ha, x="split", y=y, color="split", title=f"{y}: home vs. away")
+        fig = px.bar(ha, x="split", y=y, color="split", title=f"{y}: home vs. away",
+                     color_discrete_sequence=["#f97316", "#38bdf8"])
+        fig.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font_color="#e5e9f0")
         st.plotly_chart(fig, use_container_width=True)
         cols = (["split", "G", "PA", "AVG", "OBP", "SLG", "OPS"] if kind == "batting"
                 else ["split", "G", "IP", "ERA", "WHIP", "K9", "BB9"])
@@ -261,9 +275,8 @@ with tab4:
 
 st.divider()
 
-# --- per-game distribution, not just the average ----------------------------
-st.subheader("📊 Per-game distribution")
-st.caption("The averages above hide the spread — this is the actual game-to-game shape behind them.")
+# --- per-game distribution ----------------------------------------------
+section("📊", "Per-game distribution", "The averages above hide the spread — this is the actual game-to-game shape behind them.")
 if kind == "batting":
     dist_metric = st.selectbox("Metric", ["Hits per game", "Total bases per game", "Strikeouts per game"])
     colmap = {"Hits per game": "batting_H", "Total bases per game": "batting_TB", "Strikeouts per game": "batting_SO"}
@@ -274,9 +287,11 @@ per_game = pdf.groupby("game_pk")[colmap[dist_metric]].sum()
 if per_game.empty:
     st.info("No games to chart.")
 else:
-    fig = px.histogram(per_game, nbins=int(per_game.max()) + 2 if per_game.max() < 15 else 15, title=dist_metric)
+    fig = px.histogram(per_game, nbins=int(per_game.max()) + 2 if per_game.max() < 15 else 15, title=dist_metric,
+                        color_discrete_sequence=["#f97316"])
     fig.add_vline(x=per_game.mean(), line_dash="dot", annotation_text=f"avg {per_game.mean():.2f}")
-    fig.update_layout(showlegend=False, xaxis_title=dist_metric, yaxis_title="Games")
+    fig.update_layout(showlegend=False, xaxis_title=dist_metric, yaxis_title="Games",
+                       paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font_color="#e5e9f0")
     st.plotly_chart(fig, use_container_width=True)
 
 st.caption(

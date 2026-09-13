@@ -3,17 +3,14 @@ import streamlit as st
 
 from data_loader import LEVEL_LABEL, load_data
 from metrics import batting_line, fip, league_batting_context, league_pitching_context, pitching_line, wrc_plus
-from ui import inject_mobile_css
+from ui import MUTED, hero, inject_mobile_css, section, stat_cards
 
 st.set_page_config(page_title="MiLB Analyst Hub", page_icon="⚾", layout="wide", initial_sidebar_state="expanded")
 inject_mobile_css()
 
-st.title("⚾ MiLB Analyst Hub")
-st.caption(
-    "A scouting-department-style read on the MiLB game-log dataset — player development, "
-    "team roster strength, and where a club's biggest positional or rotation gaps sit. "
-    "Use the arrow at the top of the sidebar to collapse it on a small screen."
-)
+hero("⚾", "MiLB Analyst Hub",
+     "A scouting-department-style read on the MiLB game-log dataset — player development, team roster "
+     "strength, and where a club's biggest gaps sit. Tap the sidebar's arrow to collapse it on a phone.")
 
 with st.spinner("Loading dataset..."):
     batting, pitching = load_data()
@@ -21,36 +18,42 @@ with st.spinner("Loading dataset..."):
 st.sidebar.header("Filters")
 level = st.sidebar.selectbox("Level (league snapshot below)", ["AA", "A+", "A"], key="home_level")
 
-c1, c2, c3, c4, c5 = st.columns(5)
-c1.metric("Seasons covered", f"{batting['season'].min()}–{batting['season'].max()}")
-c2.metric("Player-games (batting)", f"{len(batting):,}")
-c3.metric("Player-games (pitching)", f"{len(pitching):,}")
-c4.metric("Unique players", f"{pd.concat([batting['player_id'], pitching['player_id']]).nunique():,}")
-c5.metric("Unique teams", f"{pd.concat([batting['team_id'], pitching['team_id']]).nunique():,}")
+stat_cards([
+    {"label": "Seasons covered", "value": f"{batting['season'].min()}–{batting['season'].max()}"},
+    {"label": "Player-games (batting)", "value": f"{len(batting):,}"},
+    {"label": "Player-games (pitching)", "value": f"{len(pitching):,}"},
+    {"label": "Unique players", "value": f"{pd.concat([batting['player_id'], pitching['player_id']]).nunique():,}"},
+    {"label": "Unique teams", "value": f"{pd.concat([batting['team_id'], pitching['team_id']]).nunique():,}"},
+], cols=5)
 
 st.divider()
-st.subheader("What's in here")
+section("🧭", "What's in here")
 left, right = st.columns(2)
 with left:
-    st.page_link("pages/1_Player_Dashboard.py", label="Open the Player Analyst Dashboard", icon="🧢")
+    st.page_link("pages/1_Player_Dashboard.py", label="Player Analyst Dashboard", icon="🧢")
     st.markdown(
         "- Full slash line + **wOBA, wRC+/OPS+, ISO, BABIP, BB%/K%** for hitters\n"
         "- **ERA, FIP, WHIP, K-BB%** and strike-throwing rates for pitchers\n"
         "- Rolling-window form, month splits, home/away splits, and season-over-season growth\n"
         "- A live **MLB status badge** — active in the majors, back in MiLB, hurt, released, retired\n"
-        "- Filter the whole player pool by level, team, position, age, and status before you search"
+        "- **Compare two players** head-to-head, export any table to CSV"
     )
 with right:
-    st.page_link("pages/2_Team_Dashboard.py", label="Open the Team Analyst Dashboard", icon="🏟️")
+    st.page_link("pages/2_Team_Dashboard.py", label="Team Analyst Dashboard", icon="🏟️")
     st.markdown(
         "- Team record, run environment, and roster-wide offense/pitching lines\n"
-        "- **Positional need finder** — every spot on the field vs. the league average at that level\n"
+        "- **Positional need finder** — every spot on the field vs. the league average\n"
         "- Rotation vs. bullpen strength, with the specific players driving each number\n"
         "- Roster tables filterable by position, age, and live MLB/MiLB status"
     )
+st.page_link("pages/3_Trade_Simulator.py", label="Trade Simulator", icon="🔁")
+st.markdown(
+    "- Build a hypothetical trade between two teams and see the roster impact instantly — "
+    "**squad rating, offense/pitching lines, and positional need**, before vs. after."
+)
 
 st.divider()
-st.subheader(f"League snapshot — most recent season on file, {LEVEL_LABEL.get(level, level)}")
+section("📊", f"League snapshot — most recent season on file, {LEVEL_LABEL.get(level, level)}")
 latest_season = int(batting["season"].max())
 bsub = batting[(batting["season"] == latest_season) & (batting["team_level"] == level)]
 psub = pitching[(pitching["season"] == latest_season) & (pitching["team_level"] == level)]
@@ -97,6 +100,6 @@ with colB:
 st.caption(
     "Data: [rvlpw/milb-game-logs](https://huggingface.co/datasets/rvlpw/milb-game-logs) via the MLB Stats API. "
     "wOBA/wRC+/FIP use standard linear-weight formulas, benchmarked against this dataset's own season+level "
-    "averages rather than imported MLB constants. Player status badges on the other two pages come from a live "
-    "lookup against the MLB Stats API (cached locally so it isn't refetched every run)."
+    "averages rather than imported MLB constants. Player status badges come from a live lookup against the "
+    "MLB Stats API (cached locally)."
 )

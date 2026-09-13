@@ -231,3 +231,29 @@ def radar_metrics(kind: str):
                 ("BB%", "BB_pct", False), ("K%", "K_pct", True), ("SB%", "SB_pct", False)]
     return [("K/9", "K9", False), ("BB/9", "BB9", True), ("HR/9", "HR9", True),
             ("WHIP", "WHIP", True), ("Strike%", "Strike_pct", False), ("K-BB%", None, False)]
+
+
+# ---- trade simulator -----------------------------------------------------
+
+def simulate_trade(df: pd.DataFrame, team_a: str, team_b: str, a_out: set, b_out: set) -> pd.DataFrame:
+    """Relabels which team each traded player's historical rows count toward.
+    This is a 'what if these two rosters had these players instead' swap of
+    real production, not a projection - the honest way to preview a trade
+    against games that have already been played."""
+    out = df.copy()
+    sim = out["team_name"].copy()
+    mask_a = out["player_id"].isin(a_out) & (out["team_name"] == team_a)
+    mask_b = out["player_id"].isin(b_out) & (out["team_name"] == team_b)
+    sim = sim.mask(mask_a, team_b).mask(mask_b, team_a)
+    out["team_name_sim"] = sim
+    return out
+
+
+def power_rating(wrc, fip) -> float:
+    """A simple, explainable 0-100 'squad rating' for a quick before/after
+    read on a trade - not a WAR-based projection, just a normalized blend
+    of offense (wRC+) and pitching (FIP)."""
+    off = np.nan if pd.isna(wrc) else np.clip((wrc - 40) / (160 - 40) * 100, 0, 100)
+    pit = np.nan if pd.isna(fip) else np.clip(100 - (fip - 2.5) / (6.0 - 2.5) * 100, 0, 100)
+    parts = [x for x in (off, pit) if pd.notna(x)]
+    return round(sum(parts) / len(parts), 1) if parts else np.nan
