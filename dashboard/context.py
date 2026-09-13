@@ -31,8 +31,8 @@ def load_context():
     with st.sidebar:
         st.markdown("### Your field of view")
         st.caption("Start with a league. Every page follows these filters.")
-        source = st.selectbox("Data source", ["Included sample", "Hugging Face", "Local dataset"],
-                              index=1 if os.getenv("DASHBOARD_SOURCE") == "hub" else 0, key="data_source")
+        source = st.selectbox("Data source", ["Hugging Face", "Included sample", "Local dataset"],
+                              index=0, key="data_source")
         if source == "Hugging Face":
             location = st.text_input("Dataset repository", DATASET_ID, key="dataset_repository")
         elif source == "Local dataset":
