@@ -19,7 +19,7 @@ import requests
 
 CACHE_FILE = Path(__file__).with_name("cache") / "bios.json"
 STALE_SECONDS = 3 * 24 * 3600  # 3 days
-API = "https://statsapi.mlb.com/api/v1/people/{}?hydrate=currentTeam,status"
+API = "https://statsapi.mlb.com/api/v1/people/{}?hydrate=currentTeam,team,status"
 
 STATUS_ORDER = ["Active – MLB", "Active – MiLB", "Injured List", "Restricted / Suspended",
                 "Free Agent / Released", "Retired", "Other / Unknown"]
@@ -82,7 +82,11 @@ def _fetch_one(player_id: int) -> dict:
         if not people:
             raise ValueError("no person")
         p = people[0]
-        team = p.get("currentTeam") or {}
+        # currentTeam is the primary signal, but for a player on a 40-man
+        # roster who's been optioned down, it can lag or point at the parent
+        # club; the plain "team" hydrate is a useful second opinion when it
+        # disagrees or currentTeam comes back empty.
+        team = p.get("currentTeam") or p.get("team") or {}
         sport = team.get("sport") or {}
         roster_status = (p.get("status") or {}).get("description")
         active = bool(p.get("active"))
@@ -90,7 +94,7 @@ def _fetch_one(player_id: int) -> dict:
         row = dict(
             player_id=int(player_id), age=p.get("currentAge"), birth_date=p.get("birthDate"),
             debut_date=p.get("mlbDebutDate"), last_played=p.get("lastPlayedDate"),
-            active=active, current_team=team.get("name"), sport_id=sport.get("id"),
+            active=active, current_team=team.get("name"), current_level=sport.get("name"), sport_id=sport.get("id"),
             roster_status=roster_status, height=p.get("height"), height_cm=_height_to_cm(p.get("height")),
             weight_lb=p.get("weight"), weight_kg=round(p["weight"] * 0.453592) if p.get("weight") else None,
             bats=(p.get("batSide") or {}).get("description"), throws=(p.get("pitchHand") or {}).get("description"),
@@ -99,7 +103,7 @@ def _fetch_one(player_id: int) -> dict:
         row["status"] = _bucket(active, sport.get("id"), roster_status)
     except Exception:
         row = dict(player_id=int(player_id), age=None, birth_date=None, debut_date=None,
-                   last_played=None, active=None, current_team=None, sport_id=None,
+                   last_played=None, active=None, current_team=None, current_level=None, sport_id=None,
                    roster_status=None, height=None, height_cm=None, weight_lb=None, weight_kg=None,
                    bats=None, throws=None, birthplace=None, status="Other / Unknown", fetched_at=time.time())
     return row
