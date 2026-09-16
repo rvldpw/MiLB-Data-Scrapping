@@ -45,7 +45,9 @@ def game_signature(game):
     return hashlib.sha256(json.dumps(relevant, sort_keys=True).encode()).hexdigest()
 
 
-def needs_fetch(game, index, today, refresh_days, historical):
+def needs_fetch(game, index, today, refresh_days, historical, excluded=frozenset()):
+    if game["gamePk"] in excluded:
+        return False
     previous = index.get(str(game["gamePk"]))
     if previous is None or previous["signature"] != game_signature(game):
         return True
