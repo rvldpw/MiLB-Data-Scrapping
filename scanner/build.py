@@ -43,20 +43,23 @@ def run(settings, client, store, now=None):
         missing_levels = set(settings.sport_ids) - {g["sport_id"] for g in final_games}
         if missing_levels:
             raise IncompleteRun(f"No completed games returned for {season}, sport IDs {sorted(missing_levels)}; not marking complete")
-    targets = [g for g in final_games if needs_fetch(g, game_index, today, settings.refresh_days, historical)]
+    excluded_games = dict(record.get("excluded_games", {}))
+    targets = [g for g in final_games if needs_fetch(g, game_index, today, settings.refresh_days, historical,
+                                                       excluded={int(pk) for pk in excluded_games})]
     log.info("%s final games; %s need box scores", len(final_games), len(targets))
-    batch, metadata, failures = [], {}, []
+    batch, metadata, failures, newly_excluded = [], {}, [], {}
     fetched, attempted, limited = 0, 0, False
 
     def checkpoint(complete=False):
-        nonlocal batch, metadata
+        nonlocal batch, metadata, newly_excluded
         files = merge_games(store, batch, game_index)
         for result in batch:
             game_index[str(result.game_pk)] = metadata[str(result.game_pk)]
             catalog.update(result.catalog)
+        excluded_games.update(newly_excluded)
         record.update({"last_attempt_on": today.isoformat(), "stored_games": len(game_index),
                        "scheduled_final_games": len(final_games), "last_run_errors": failures,
-                       "updated_at": stamp})
+                       "excluded_games": excluded_games, "updated_at": stamp})
         if complete:
             was_complete = record.get("initialized") and (not historical or record.get("final_complete"))
             record.update({"initialized": True, "final_complete": historical,
@@ -67,7 +70,7 @@ def run(settings, client, store, now=None):
                       "catalog.json": json_bytes(catalog), "README.md": dataset_card(catalog)})
         store.commit(files, f"MiLB {season}: {'complete snapshot' if complete else 'checkpoint'} ({len(game_index)} games)")
         log.info("Committed %s games; %s total stored for %s", len(batch), len(game_index), season)
-        batch, metadata = [], {}
+        batch, metadata, newly_excluded = [], {}, {}
 
     for game in targets:
         if ((settings.max_games and attempted >= settings.max_games)
@@ -77,9 +80,18 @@ def run(settings, client, store, now=None):
         attempted += 1
         try:
             result = parse_boxscore(game, client.boxscore(game["gamePk"]), stamp)
-        except (FetchError, ValueError, KeyError, TypeError) as exc:
+        except FetchError as exc:
             failures.append({"game_pk": game["gamePk"], "error": str(exc)})
-            log.error("Game %s failed: %s", game["gamePk"], exc)
+            log.error("Game %s failed (retryable): %s", game["gamePk"], exc)
+            continue
+        except ValueError as exc:
+            # parse_boxscore raises ValueError only for a game whose own schedule/box-score
+            # entry is permanently missing required data (e.g. a "Final" game with no score
+            # attached in MLB's feed) - retrying never fixes stale historical data, so record
+            # it once and stop spending a fetch on it every run rather than blocking the
+            # season from ever completing.
+            newly_excluded[str(game["gamePk"])] = {"error": str(exc), "excluded_on": today.isoformat()}
+            log.warning("Game %s permanently excluded (source data gap): %s", game["gamePk"], exc)
             continue
         batch.append(result)
         metadata[str(result.game_pk)] = {"signature": game_signature(game), "fetched_on": today.isoformat(),
@@ -87,13 +99,18 @@ def run(settings, client, store, now=None):
         fetched += 1
         if len(batch) >= settings.checkpoint_games:
             checkpoint()
+    excluded_this_run = len(newly_excluded)
     complete = not limited and not failures
     # Avoid an empty off-season commit on every run after initialization.
-    if batch or targets or not record.get("initialized") or (historical and not record.get("final_complete")):
+    if batch or newly_excluded or targets or not record.get("initialized") or (historical and not record.get("final_complete")):
         checkpoint(complete=complete)
     summary = {"season": season, "status": "complete" if complete else "partial",
                "games_fetched": fetched, "stored_games": len(game_index),
-               "scheduled_final_games": len(final_games), "failures": len(failures)}
+               "scheduled_final_games": len(final_games), "failures": len(failures),
+               "excluded_games": len(excluded_games)}
     if failures:
         log.warning("%s games failed for %s; successful games saved, retry next run", len(failures), season)
+    if excluded_this_run:
+        log.warning("%s games permanently excluded for %s this run (%s total excluded all-time)",
+                    excluded_this_run, season, len(excluded_games))
     return summary
