@@ -125,6 +125,31 @@ def test_failed_game_does_not_complete_and_successes_persist(tmp_path):
     assert client.calls == [1, 2, 1]
 
 
+def test_permanently_broken_game_is_excluded_not_retried_forever(tmp_path):
+    # A "Final" game whose own schedule entry never got a score attached (seen in the
+    # wild: postponed/suspended games that MLB's feed marks Final but never backfills) -
+    # retrying can never fix stale historical data, so this must not block the season
+    # from completing, and must not be re-fetched on every future run either.
+    broken, ok1, ok2 = sample(pk=1), sample(pk=2), sample(pk=3)
+    broken[0]["teams"]["home"]["score"] = None
+    client = FakeClient([broken, ok1, ok2])
+    store = LocalStore(tmp_path)
+    config = settings(max_games=1)
+    first = run(config, client, store, at("2026-09-10"))
+    assert first["excluded_games"] == 1
+    assert first["failures"] == 0
+    second = run(config, client, store, at("2026-09-11"))
+    assert second["status"] == "partial"
+    third = run(config, client, store, at("2026-09-12"))
+    assert third["status"] == "complete"
+    assert third["excluded_games"] == 1
+    # The broken game was attempted exactly once, ever - never retried on later runs.
+    assert client.calls == [1, 2, 3]
+    state = read_json(store, "state/index.json", {})
+    assert state["seasons"]["2021"]["final_complete"] is True
+    assert set(read_json(store, "state/2021.json", {})) == {"2", "3"}
+
+
 def test_failed_upload_does_not_skip_games(tmp_path):
     class BrokenStore(LocalStore):
         def commit(self, files, message):
