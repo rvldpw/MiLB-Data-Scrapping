@@ -13,15 +13,18 @@ from xml.etree import ElementTree
 import pandas as pd
 import requests
 import streamlit as st
+from requests.adapters import HTTPAdapter, Retry
 
 RSS = "https://news.google.com/rss/search?q={}&hl=en-US&gl=US&ceid=US:en"
+SESSION = requests.Session()
+SESSION.mount("https://", HTTPAdapter(max_retries=Retry(total=2, backoff_factor=.5, status_forcelist=(429, 500, 502, 503, 504))))
 COLUMNS = ["title", "link", "published", "source"]
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_news(query: str, max_items: int = 6) -> pd.DataFrame:
     try:
-        r = requests.get(RSS.format(quote(query)), timeout=6, headers={"User-Agent": "Mozilla/5.0"})
+        r = SESSION.get(RSS.format(quote(query)), timeout=8, headers={"User-Agent": "Mozilla/5.0"})
         r.raise_for_status()
         root = ElementTree.fromstring(r.content)
         rows = []

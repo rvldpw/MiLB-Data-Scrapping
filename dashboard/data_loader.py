@@ -3,6 +3,7 @@ from pathlib import Path
 import json
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 import pandas as pd
@@ -116,14 +117,18 @@ def source_catalog(source, location, token=None):
 
 @st.cache_data(ttl=900, show_spinner=False, max_entries=12)
 def load_partition(source, location, revision, paths, kind, token=None):
-    frames = []
     root = Path(location).expanduser().resolve() if source != "Hugging Face" else None
-    for relative in sorted(set(paths)):
-        if not PATH_PATTERN.fullmatch(relative):
-            raise ValueError("The catalog contains an unsupported table path")
+    relatives = sorted(set(paths))
+    if not all(PATH_PATTERN.fullmatch(r) for r in relatives):
+        raise ValueError("The catalog contains an unsupported table path")
+
+    def read(relative):
         if source == "Hugging Face":
             file = hf_hub_download(location, relative, repo_type="dataset", revision=revision, token=token)
         else:
             file = root / relative
-        frames.append(pq.ParquetFile(file).read().to_pandas())
+        return pq.ParquetFile(file).read().to_pandas()
+    # Several seasons mean many small files; fetch them concurrently.
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        frames = list(pool.map(read, relatives))
     return clean_data(pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(), kind)

@@ -8,18 +8,18 @@ renders instead via the <img onerror> fallback, so nothing ever looks blank.
 _SILHOUETTE = (
     "data:image/svg+xml;utf8,"
     "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'>"
-    "<rect width='100' height='100' fill='%23334155'/>"
-    "<circle cx='50' cy='38' r='18' fill='%2394a3b8'/>"
-    "<path d='M15 95 Q50 60 85 95 Z' fill='%2394a3b8'/>"
+    "<rect width='100' height='100' fill='%23e3ebe0'/>"
+    "<circle cx='50' cy='38' r='18' fill='%239db0a3'/>"
+    "<path d='M15 95 Q50 60 85 95 Z' fill='%239db0a3'/>"
     "</svg>"
 )
 
 _SHIELD = (
     "data:image/svg+xml;utf8,"
     "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'>"
-    "<path d='M50 5 L90 20 V50 Q90 80 50 95 Q10 80 10 50 V20 Z' fill='%23334155'/>"
-    "<text x='50' y='60' font-size='34' text-anchor='middle' fill='%2394a3b8' "
-    "font-family='sans-serif'>%E2%9A%BE</text></svg>"
+    "<path d='M50 5 L90 20 V50 Q90 80 50 95 Q10 80 10 50 V20 Z' fill='%23e3ebe0'/>"
+    "<circle cx='50' cy='50' r='17' fill='none' stroke='%239db0a3' stroke-width='5'/>"
+    "</svg>"
 )
 
 
@@ -36,7 +36,7 @@ def player_photo_html(player_id, size=90, radius="50%") -> str:
     return (
         f"<img src='{url}' onerror=\"this.onerror=null;this.src='{_SILHOUETTE}'\" "
         f"style='width:{size}px;height:{size}px;object-fit:cover;border-radius:{radius};"
-        f"background:#1e293b;border:1px solid #334155;' />"
+        f"background:#e3ebe0;border:1px solid #d9e1d4;' />"
     )
 
 

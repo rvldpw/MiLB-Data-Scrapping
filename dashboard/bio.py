@@ -1,142 +1,246 @@
-"""Live player status, straight from the MLB Stats API (the same `player_id`
-already in the game logs is a real MLB person ID, so no matching/guessing is
-needed). Answers exactly the question "is this guy still active in MLB, back
-down in MiLB, released, hurt, retired?" - none of which the game-log dataset
-itself can tell you, since it only has box-score rows.
+"""Where is each player today? Answered from the MLB Stats API.
 
-Results are cached to a small JSON file on disk (a person's org/roster status
-doesn't change minute to minute) so repeat sessions don't re-fetch everyone,
-and a ThreadPoolExecutor fans batch lookups out concurrently so filtering a
-30-40 man roster feels instant after the first fetch.
+`player_id` in the game logs is the real MLB person ID, so no name matching is
+needed. For every player we resolve the *current team*, then map that team to
+its level (MLB, Triple-A, Double-A, High-A, Single-A, Rookie) with the API's own
+team list. That is the reliable signal: the API's per-player `active` flag is
+often False for minor leaguers who are on a roster, so it is not used.
+
+A player with no current team is reported as "No team", never guessed to be
+released or retired. Roster status (injured list, restricted, etc.) is read from
+the current team's full roster when the API supplies it.
+
+Everything is cached on disk (people for 3 days, team list and rosters for 1
+day) and fetched in bulk and in parallel, so filtering a whole league is one
+short wait the first time.
 """
 import json
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from html import escape
+from concurrent.futures import ThreadPoolExecutor
+from datetime import date
 from pathlib import Path
 
 import pandas as pd
 import requests
+import streamlit as st
+from requests.adapters import HTTPAdapter, Retry
 
-CACHE_FILE = Path(__file__).with_name("cache") / "bios.json"
-STALE_SECONDS = 3 * 24 * 3600  # 3 days
-API = "https://statsapi.mlb.com/api/v1/people/{}?hydrate=currentTeam,team,status"
+CACHE_DIR = Path(__file__).with_name("cache")
+PEOPLE_TTL = 3 * 24 * 3600
+TEAM_TTL = 24 * 3600
+BATCH = 100
+API = "https://statsapi.mlb.com/api/v1"
 
-STATUS_ORDER = ["Active – MLB", "Active – MiLB", "Injured List", "Restricted / Suspended",
-                "Free Agent / Released", "Retired", "Other / Unknown"]
-STATUS_COLOR = {
-    "Active – MLB": "#22c55e", "Active – MiLB": "#3b82f6", "Injured List": "#f59e0b",
-    "Restricted / Suspended": "#f97316", "Free Agent / Released": "#94a3b8",
-    "Retired": "#64748b", "Other / Unknown": "#64748b",
+# MLB Stats API sport ids -> the labels used everywhere in the dashboard.
+LEVEL_BY_SPORT = {1: "MLB", 11: "Triple-A", 12: "Double-A", 13: "High-A", 14: "Single-A", 16: "Rookie / complex"}
+LEVEL_ORDER = ["MLB", "Triple-A", "Double-A", "High-A", "Single-A", "Rookie / complex", "Other league", "No team", "Unknown"]
+# How the scanner labels its own levels.
+DATA_LEVEL = {"AAA": "Triple-A", "AA": "Double-A", "A+": "High-A", "A": "Single-A", "R": "Rookie / complex"}
+STATES = ["Active", "Injured list", "Restricted list", "Suspended", "Development list"]
+
+# Level chips: (background, text). Soft tints, all >= 4.5:1 contrast.
+LEVEL_COLOR = {
+    "MLB": ("#1f4e8c", "#ffffff"), "Triple-A": ("#dce8fa", "#173f75"), "Double-A": ("#d5f0e0", "#0d6a3b"),
+    "High-A": ("#fff0c2", "#7a5200"), "Single-A": ("#fde0cf", "#a03e0c"), "Rookie / complex": ("#e7ece4", "#3f4f45"),
+    "Other league": ("#eef1ec", "#55645a"), "No team": ("#eef1ec", "#55645a"), "Unknown": ("#eef1ec", "#55645a"),
 }
 
 
-def _load_cache() -> dict:
+COLUMNS = ["player_id", "age", "birth_date", "debut_date", "current_team", "team_id", "current_org", "current_level", "sport_id",
+           "position", "height", "height_cm", "weight_lb", "weight_kg", "bats", "throws", "birthplace", "fetched_at"]
+
+
+def _read(name):
     try:
-        return json.loads(CACHE_FILE.read_text())
+        return json.loads((CACHE_DIR / name).read_text())
     except Exception:
         return {}
 
 
-def _save_cache(cache: dict) -> None:
+def _write(name, data):
     try:
-        CACHE_FILE.parent.mkdir(exist_ok=True)
-        CACHE_FILE.write_text(json.dumps(cache))
+        CACHE_DIR.mkdir(exist_ok=True)
+        (CACHE_DIR / name).write_text(json.dumps(data))
     except Exception:
-        pass  # best-effort; a failed write just means we re-fetch next time
+        pass  # best effort: a failed write only means a re-fetch later
 
 
-def _bucket(active: bool, sport_id, roster_status: str) -> str:
-    rs = (roster_status or "").lower()
-    if "injured" in rs or rs.startswith("il") or "day-to-day" in rs:
-        return "Injured List"
-    if "restrict" in rs or "suspend" in rs or "bereavement" in rs or "paternity" in rs:
-        return "Restricted / Suspended"
-    if "retired" in rs:
-        return "Retired"
-    if active and sport_id == 1:
-        return "Active – MLB"
-    if active and sport_id in {11, 12, 13, 14, 16}:
-        return "Active – MiLB"
-    if "free agent" in rs or "released" in rs:
-        return "Free Agent / Released"
-    return "Other / Unknown"
+# One pooled session: the API rate-limits bursts, so retry a few times before giving up.
+SESSION = requests.Session()
+SESSION.mount("https://", HTTPAdapter(max_retries=Retry(total=3, backoff_factor=.6, respect_retry_after_header=True,
+                                                       status_forcelist=(429, 500, 502, 503, 504))))
 
 
-def _height_to_cm(height: str):
-    """MLB Stats API returns height as e.g. \"6' 2\\\"\" - convert to whole cm."""
-    if not height:
+def _get(path, **params):
+    r = SESSION.get(f"{API}/{path}", params=params, timeout=15)
+    r.raise_for_status()
+    return r.json()
+
+
+def _season():
+    return date.today().year
+
+
+def team_map():
+    """{team_id: [sport_id, org_name]} for MLB and every affiliated level."""
+    cached = _read("teams.json")
+    if cached.get("season") == _season() and time.time() - cached.get("at", 0) < TEAM_TTL and cached.get("teams"):
+        return cached["teams"]
+    teams = {}
+    for season in (_season(), _season() - 1):  # early in a year the new season may not be listed yet
+        for t in _get("teams", sportIds=",".join(map(str, LEVEL_BY_SPORT)), season=season).get("teams", []):
+            org = t["name"] if t["sport"]["id"] == 1 else t.get("parentOrgName") or t["name"]
+            teams.setdefault(str(t["id"]), [t["sport"]["id"], org])
+        if teams:
+            break
+    if not teams:
+        raise ValueError("MLB team list is empty")
+    _write("teams.json", {"season": _season(), "at": time.time(), "teams": teams})
+    return teams
+
+
+def _height_to_cm(height):
+    try:
+        feet, inches = str(height).replace('"', "").split("'")
+        return round((int(feet) * 12 + int(inches)) * 2.54)
+    except Exception:
         return None
-    try:
-        feet, inches = height.replace('"', "").split("'")
-        total_inches = int(feet.strip()) * 12 + int(inches.strip())
-        return round(total_inches * 2.54)
-    except Exception:
-        return None
 
 
-def _fetch_one(player_id: int) -> dict:
-    try:
-        r = requests.get(API.format(int(player_id)), timeout=6)
-        r.raise_for_status()
-        people = r.json().get("people") or []
-        if not people:
-            raise ValueError("no person")
-        p = people[0]
-        # currentTeam is the primary signal, but for a player on a 40-man
-        # roster who's been optioned down, it can lag or point at the parent
-        # club; the plain "team" hydrate is a useful second opinion when it
-        # disagrees or currentTeam comes back empty.
-        team = p.get("currentTeam") or p.get("team") or {}
-        sport = team.get("sport") or {}
-        roster_status = (p.get("status") or {}).get("description")
-        active = bool(p.get("active"))
-        birthplace = ", ".join(x for x in (p.get("birthCity"), p.get("birthStateProvince") or p.get("birthCountry")) if x)
-        row = dict(
-            player_id=int(player_id), age=p.get("currentAge"), birth_date=p.get("birthDate"),
-            debut_date=p.get("mlbDebutDate"), last_played=p.get("lastPlayedDate"),
-            active=active, current_team=team.get("name"), current_level=sport.get("name"), sport_id=sport.get("id"),
-            roster_status=roster_status, height=p.get("height"), height_cm=_height_to_cm(p.get("height")),
-            weight_lb=p.get("weight"), weight_kg=round(p["weight"] * 0.453592) if p.get("weight") else None,
-            bats=(p.get("batSide") or {}).get("description"), throws=(p.get("pitchHand") or {}).get("description"),
-            birthplace=birthplace, fetched_at=time.time(),
-        )
-        row["status"] = _bucket(active, sport.get("id"), roster_status)
-    except Exception:
-        row = dict(player_id=int(player_id), age=None, birth_date=None, debut_date=None,
-                   last_played=None, active=None, current_team=None, current_level=None, sport_id=None,
-                   roster_status=None, height=None, height_cm=None, weight_lb=None, weight_kg=None,
-                   bats=None, throws=None, birthplace=None, status="Other / Unknown", fetched_at=time.time())
-    return row
+def _state(code, description):
+    code = (code or "").upper()
+    if code == "A":
+        return "Active"
+    if code == "DEV":
+        return "Development list"
+    if code.startswith("D") or code.startswith("IL"):
+        return "Injured list"
+    if code in ("RST", "BRV", "PL", "FAM", "PAT"):
+        return "Restricted list"
+    if code.startswith("SUS"):
+        return "Suspended"
+    return description or None
 
 
-def get_bios(player_ids, max_workers: int = 10, progress=None) -> pd.DataFrame:
-    """Return a bio/status row per player_id, hitting the network only for
-    ids that are missing from the cache or stale. `progress`, if given, is a
-    Streamlit progress bar/callable updated as fetches complete.
-    """
-    ids = sorted({int(x) for x in player_ids})
-    cache = _load_cache()
+def _level(team_id, teams):
+    if not team_id:
+        return None, "No team", None
+    hit = teams.get(str(team_id))
+    if not hit:
+        return None, "Other league", None
+    return hit[0], LEVEL_BY_SPORT.get(hit[0], "Other league"), hit[1]
+
+
+def _person_row(p, teams):
+    team = p.get("currentTeam") or {}
+    sport_id, level, org = _level(team.get("id"), teams)
+    weight = p.get("weight")
+    return dict(
+        player_id=int(p["id"]), age=p.get("currentAge"), birth_date=p.get("birthDate"), debut_date=p.get("mlbDebutDate"),
+        current_team=team.get("name"), team_id=team.get("id"), current_org=org, current_level=level, sport_id=sport_id,
+        position=(p.get("primaryPosition") or {}).get("abbreviation"),
+        height=p.get("height"), height_cm=_height_to_cm(p.get("height")), weight_lb=weight,
+        weight_kg=round(weight * 0.453592) if weight else None,
+        bats=(p.get("batSide") or {}).get("description"), throws=(p.get("pitchHand") or {}).get("description"),
+        birthplace=", ".join(x for x in (p.get("birthCity"), p.get("birthStateProvince") or p.get("birthCountry")) if x),
+        fetched_at=time.time(),
+    )
+
+
+def _fetch_people(ids, teams):
+    data = _get("people", personIds=",".join(map(str, ids)), hydrate="currentTeam")
+    return [_person_row(p, teams) for p in data.get("people", [])]
+
+
+def _roster_states(team_ids):
+    """{player_id: state} from each team's full roster. Best effort."""
+    cache = _read("rosters.json")
     now = time.time()
-    missing = [pid for pid in ids if str(pid) not in cache
-               or now - cache[str(pid)].get("fetched_at", 0) > STALE_SECONDS]
+    fresh = {t: v for t, v in cache.items() if now - v.get("at", 0) < TEAM_TTL}
 
+    def fetch(tid):
+        try:
+            roster = _get(f"teams/{tid}/roster", rosterType="fullRoster", season=_season()).get("roster", [])
+            return tid, {"at": now, "players": {str(r["person"]["id"]): _state(r["status"].get("code"), r["status"].get("description")) for r in roster}}
+        except Exception:
+            return tid, None
+    todo = [str(t) for t in team_ids if str(t) not in fresh]
+    if todo:
+        with ThreadPoolExecutor(max_workers=16) as pool:
+            for tid, value in pool.map(fetch, todo):
+                if value is not None:
+                    fresh[tid] = value
+        _write("rosters.json", fresh)
+    return {pid: state for tid in map(str, team_ids) for pid, state in fresh.get(tid, {}).get("players", {}).items()}
+
+
+def _lookup(player_ids, max_workers=6, with_roster=True):
+    """One row per requested player_id (always)."""
+    ids = sorted({int(x) for x in player_ids})
+    cache = _read("bios.json")
+    now = time.time()
+    missing = [i for i in ids if str(i) not in cache or now - cache[str(i)].get("fetched_at", 0) > PEOPLE_TTL]
     if missing:
-        done = 0
-        with ThreadPoolExecutor(max_workers=max_workers) as pool:
-            futures = {pool.submit(_fetch_one, pid): pid for pid in missing}
-            for fut in as_completed(futures):
-                row = fut.result()
-                cache[str(row["player_id"])] = row
-                done += 1
-                if progress is not None:
-                    progress(done / len(missing))
-        _save_cache(cache)
+        try:
+            teams = team_map()
+            batches = [missing[i:i + BATCH] for i in range(0, len(missing), BATCH)]
+            with ThreadPoolExecutor(max_workers=max_workers) as pool:
+                for rows in pool.map(lambda b: _safe(_fetch_people, b, teams), batches):
+                    for row in rows:
+                        cache[str(row["player_id"])] = row
+            _write("bios.json", cache)
+        except Exception:
+            pass  # players we could not resolve fall through to "Unknown" below
+    rows = [cache.get(str(i)) or dict(player_id=i, current_level="Unknown", sport_id=None, team_id=None) for i in ids]
+    frame = pd.DataFrame(rows, columns=COLUMNS) if not rows else pd.DataFrame(rows).reindex(columns=COLUMNS)
+    frame["roster_status"] = None
+    if with_roster and not frame.empty:
+        try:
+            states = _roster_states(frame["team_id"].dropna().astype(int).unique())
+            frame["roster_status"] = frame["player_id"].astype(str).map(states)
+        except Exception:
+            pass
+    return frame
 
-    rows = [cache[str(pid)] for pid in ids if str(pid) in cache]
-    return pd.DataFrame(rows)
+
+def _safe(fn, *args):
+    try:
+        return fn(*args)
+    except Exception:
+        return []
 
 
-def status_badge_html(status: str) -> str:
-    color = STATUS_COLOR.get(status, "#64748b")
-    return (f"<span style='background:{color}22;color:{color};border:1px solid {color};"
-            f"padding:2px 10px;border-radius:12px;font-size:0.85em;font-weight:600'>{status}</span>")
+def level_rank(level):
+    return LEVEL_ORDER.index(level) if level in LEVEL_ORDER else len(LEVEL_ORDER)
+
+
+def pool_ids(bios, mode, level, picked=()):
+    """Player ids allowed by the 'where are they now' filter.
+
+    mode: 'same' = still at `level`, 'up' = moved above it, 'pick' = any of `picked`.
+    """
+    now = bios["current_level"]
+    if mode == "same":
+        keep = now.eq(level)
+    elif mode == "up":
+        keep = now.map(level_rank).lt(level_rank(level)) & now.isin(list(LEVEL_BY_SPORT.values()))
+    else:
+        keep = now.isin(list(picked))
+    return set(bios.loc[keep, "player_id"].astype(int))
+
+
+def level_chip_html(level, state=None):
+    bg, fg = LEVEL_COLOR.get(level, LEVEL_COLOR["Unknown"])
+    extra = f" · {escape(state)}" if isinstance(state, str) and state != "Active" else ""
+    return f"<span class='lvl' style='background:{bg};color:{fg}'>{escape(level)}{extra}</span>"
+
+
+@st.cache_data(ttl=900, show_spinner=False, max_entries=32)
+def _cached_lookup(ids, with_roster):
+    return _lookup(ids, with_roster=with_roster)
+
+
+def get_bios(player_ids, with_roster=True):
+    """Bios for these players, reusing this session's lookups before touching disk or the network."""
+    return _cached_lookup(tuple(sorted({int(x) for x in player_ids})), with_roster)

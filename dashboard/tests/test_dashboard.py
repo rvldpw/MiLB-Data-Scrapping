@@ -2,10 +2,11 @@ import math
 from pathlib import Path
 import pandas as pd
 import pytest
-from dashboard.metrics import batting_line, pitching_line, innings_text, percentile_rank, simulate_trade, game_results
+from dashboard.metrics import batting_line, pitching_line, innings_text, percentile_rank, simulate_trade, game_results, player_table, split_table, rolling_rate, team_table, line_for, enriched_line
 from dashboard.data_loader import clean_data
 from dashboard.metric_catalog import RAW_FIELDS
-from dashboard.bio import _bucket
+from dashboard.bio import _level, _state, pool_ids
+from dashboard.context import Context
 
 def frame(kind, **stats):
  row={c:0 for c in RAW_FIELDS[kind].values()}
@@ -59,15 +60,31 @@ def test_game_results_are_not_multiplied_by_players():
  assert len(games)==1
  assert games.Margin.iloc[0]==2
 
-def test_status_does_not_guess_release_or_mlb():
- assert _bucket(False,None,None)=='Other / Unknown'
- assert _bucket(True,None,'Active')=='Other / Unknown'
+TEAMS={"1":[1,"Yankees"],"2":[12,"Athletics"],"3":[14,"Athletics"]}
+
+def test_level_comes_from_team_not_active_flag():
+ assert _level(1,TEAMS)==(1,'MLB','Yankees')
+ assert _level(2,TEAMS)[1]=='Double-A'
+ assert _level(999,TEAMS)[1]=='Other league'   # independent / foreign club
+ assert _level(None,TEAMS)[1]=='No team'       # never guessed as released or retired
+
+def test_roster_state_buckets():
+ assert _state('A','Active')=='Active'
+ assert _state('D60','Injured 60-Day')=='Injured list'
+ assert _state('DEV','Development List')=='Development list'
+ assert _state('RST','Restricted List')=='Restricted list'
+
+def test_pool_filter_separates_stayed_from_moved_up():
+ b=pd.DataFrame({'player_id':[1,2,3,4,5],'current_level':['Double-A','MLB','Triple-A','High-A','No team']})
+ assert pool_ids(b,'same','Double-A')=={1}
+ assert pool_ids(b,'up','Double-A')=={2,3}      # No team is not "moved up"
+ assert pool_ids(b,'pick','Double-A',['MLB','High-A'])=={2,4}
 
 def test_all_pages_render_sample():
  from streamlit.testing.v1 import AppTest
  root=Path(__file__).resolve().parents[1]
  app=AppTest.from_file(str(root/'Home.py'),default_timeout=90).run()
- src=[s for s in app.sidebar.selectbox if s.label=='Data source']
+ src=[s for s in app.sidebar.selectbox if s.label=='Source']
  src[0].set_value('Included sample').run()
  assert not app.exception
  for page in ['1_Player_Dashboard','2_Team_Dashboard','3_Trade_Simulator','4_Metric_Guide']:
@@ -78,13 +95,98 @@ def test_pitching_and_scenario_interactions():
  from streamlit.testing.v1 import AppTest
  root=Path(__file__).resolve().parents[1]
  app=AppTest.from_file(str(root/'Home.py'),default_timeout=90).run()
- src=[s for s in app.sidebar.selectbox if s.label=='Data source']
+ src=[s for s in app.sidebar.selectbox if s.label=='Source']
  src[0].set_value('Included sample').run()
  app.switch_page('pages/1_Player_Dashboard.py').run()
- app.segmented_control[0].set_value('Pitching').run()
+ app.get('button_group')[0].set_value('Pitching').run()
  assert not app.exception
  app.switch_page('pages/3_Trade_Simulator.py').run()
- app.multiselect[0].select(app.multiselect[0].options[0]).run()
- app.button[-1].click().run()
+ app.multiselect[0].select(int(app.multiselect[0].options[0].split('ID ')[-1])).run()
+ [b for b in app.button if b.label=='Run roster scenario'][0].click().run()
  assert not app.exception, [x.message for x in app.exception]
  assert any('What changes' in x.value for x in app.markdown)
+
+def test_context_period_labels():
+ kw=dict(batting=None,pitching=None,level='A',league='L',league_id=1,source='s',location='l',start=None,end=None,revision='r')
+ one=Context(seasons=(2022,2022),**kw); many=Context(seasons=(2021,2023),**kw)
+ assert (one.period,one.multi_season)==('2022',False)
+ assert (many.period,many.tag,many.multi_season)==('2021–2023','2021-2023',True)
+
+
+def games(kind,n,player=1,**over):
+ rows=[]
+ for i in range(n):
+  r=frame(kind,**{k:(v[i] if isinstance(v,list) else v) for k,v in over.items()}).iloc[0].to_dict()
+  r.update(game_pk=100+i,player_id=player,game_date=f'2021-05-{i+1:02d}',player_full_name='P%d'%player,team_name='T',pos_group='OF',role='SP')
+  rows.append(r)
+ df=pd.DataFrame(rows)
+ df['game_date']=pd.to_datetime(df['game_date'])
+ return df
+
+def test_grouped_table_matches_one_player_at_a_time():
+ """The vectorised table must equal the per-player line it replaced."""
+ a=games('batting',3,player=1,AB=[4,3,5],H=[2,1,0],TB=[3,1,0],PA=[5,4,5],BB=[1,1,0],SO=[0,2,1],HR=[0,0,0])
+ b=games('batting',2,player=2,AB=[4,4],H=[1,2],TB=[1,4],PA=[4,5],BB=[0,1],SO=[1,1],HR=[0,1])
+ df=pd.concat([a,b],ignore_index=True)
+ table=player_table(df,'batting').set_index('player_id')
+ for pid in (1,2):
+  one=enriched_line(df[df.player_id.eq(pid)],'batting',line_for(df,'batting'))
+  for key in ('AVG','OBP','SLG','OPS','ISO','PA','G','wOBA','wRC_est'):
+   assert table.loc[pid,key]==pytest.approx(one[key],nan_ok=True),key
+
+def test_grouped_table_keeps_missing_totals_unknown():
+ df=games('batting',2,AB=[4,4],H=[2,None])
+ assert math.isnan(player_table(df,'batting')['AVG'].iloc[0])
+ assert math.isnan(split_table(df,'batting','team_name')['AVG'].iloc[0])
+
+def test_rolling_window_uses_only_the_trailing_games():
+ df=games('batting',4,AB=[4,4,4,4],H=[4,0,0,0],TB=[4,0,0,0],PA=[4,4,4,4])
+ rolling=rolling_rate(df,'batting',2,'AVG')
+ assert rolling['value'].tolist()==pytest.approx([1.0,.5,0,0])
+ assert rolling['Games in window'].tolist()==[1,2,2,2]
+
+def test_team_table_counts_each_game_once():
+ df=pd.DataFrame({'game_pk':[1,1,2],'team_id':[9,9,9],'team_name':['T']*3,'game_date':pd.to_datetime(['2021-05-01']*2+['2021-05-02']),
+                  'team_score':[5,5,1],'opponent_score':[3,3,4],'result':['W','W','L'],'opponent_name':['O']*3})
+ row=team_table(df,df.iloc[:0]).iloc[0]
+ assert (row.Games,row.W,row.L,row.Margin)==(2,1,1,-1)
+ assert row.W_pct==pytest.approx(.5)
+
+def sample_app():
+ from streamlit.testing.v1 import AppTest
+ root=Path(__file__).resolve().parents[1]
+ app=AppTest.from_file(str(root/'Home.py'),default_timeout=90).run()
+ app.sidebar.selectbox(key='data_source').set_value('Included sample').run()
+ app.number_input(key='overview_min_batting').set_value(0).run()
+ return app
+
+def test_a_hidden_leaderboard_says_how_to_get_the_players_back():
+ from streamlit.testing.v1 import AppTest
+ root=Path(__file__).resolve().parents[1]
+ app=AppTest.from_file(str(root/'Home.py'),default_timeout=90).run()
+ app.sidebar.selectbox(key='data_source').set_value('Included sample').run()
+ app.number_input(key='overview_min_batting').set_value(500).run()
+ assert any('lower the minimum' in w.value for w in app.warning),[w.value for w in app.warning]
+
+def test_the_leaderboard_offers_every_ranked_player_to_open():
+ app=sample_app()
+ options=app.selectbox(key='overview_jump_batting').options
+ assert options and options[0].startswith('1. ')      # ranked, matching the table above it
+ assert isinstance(app.selectbox(key='overview_jump_batting').value,int)
+
+def test_arriving_from_another_page_selects_that_player():
+ app=sample_app()
+ wanted=app.selectbox(key='overview_jump_batting').value
+ app.session_state['_goto_player']=(wanted,'batting')
+ app.session_state['player_team_batting']=None
+ app.session_state['player_position_batting']='All'
+ app.switch_page('pages/1_Player_Dashboard.py').run()
+ assert not app.exception,[e.message for e in app.exception]
+ assert app.selectbox(key='player_pick_batting').value==wanted
+
+def test_a_player_outside_the_filters_warns_instead_of_crashing():
+ app=sample_app()
+ app.session_state['_goto_player']=(-1,'batting')   # id that cannot be selected
+ app.switch_page('pages/1_Player_Dashboard.py').run()
+ assert not app.exception,[e.message for e in app.exception]
+ assert any('not in the current filters' in w.value for w in app.warning)
