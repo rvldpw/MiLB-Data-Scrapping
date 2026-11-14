@@ -21,7 +21,8 @@ jobs:
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
       HF_PRIVATE: "true"
       START_SEASON: "2021"
-      SPORT_IDS: "12,13,14"
+      SPORT_IDS: "11,12,13,14,17"
+      GAME_TYPES: "R,F,D,L,W,C,P,A,E"
       REFRESH_DAYS: "7"
       CHECKPOINT_GAMES: "100"
       MAX_RUN_MINUTES: "150"
