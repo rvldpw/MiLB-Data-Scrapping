@@ -145,6 +145,14 @@ with rules:
         ("Sums, then rates", "Hits and at-bats are added up first, then divided. Game averages are never averaged. Pitching uses outs, "
                              "so 5.2 innings is 5 innings and 2 outs."),
         ("What box scores miss", "Command, defensive range, exit velocity, spin, pitch shape and injury risk are not in this data."),
+        ("Expected wins and luck", "A club's runs scored and allowed predict its record (Pythagorean expectation, exponent 1.83). "
+                                   "Luck is actual wins minus that. Big gaps usually shrink over time."),
+        ("Game score", "Bill James's one-number summary of a start: 50 plus outs, strikeouts and innings past the fourth, minus hits, "
+                       "runs and walks. 50 is average, 70 very good, 90 dominant."),
+        ("Similar players", "Each rate is measured in standard deviations across the group, then players are ranked by distance. "
+                            "Match 100 is identical; 0 is no closer than two typical players. It compares shape, not quality."),
+        ("Streaks and form", "A hitting streak counts games with an at-bat; an on-base streak counts games with a plate appearance. "
+                             "Form is the last ten appearances, a small sample by design."),
     ])
     st.markdown("Further reading: [MLB statistic glossary](https://www.mlb.com/glossary) · "
                 "[FanGraphs wOBA methodology](https://library.fangraphs.com/offense/woba/) · "

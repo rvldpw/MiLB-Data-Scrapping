@@ -52,7 +52,9 @@ def dataset_card(catalog):
                 lines += [f"- config_name: league-{league}-{kind}", "  data_files:", "  - split: train",
                           f'    path: "data/season-*/league-{league}/team-*/{kind}.parquet"']
     lines += ["---", "", "# MiLB player game logs", "",
-              "One row per player, game, team, and statistic group. Regular-season games at AA, High-A, and Single-A, subject to configured coverage.",
+              "One row per player, game, team, and statistic group. Regular-season and postseason games at Triple-A, Double-A, High-A, Single-A, and the off-season leagues, subject to configured coverage.",
+              "`team_level` `WIN` marks the off-season leagues: the Arizona Fall League, the Caribbean and Australian winter leagues, and the Caribbean Series. Their `season` is the year they start in, so a 2025 season runs from October 2025 into February 2026.",
+              "`game_type` is `R` for the regular season, `A` for an All-Star game and `E` for an exhibition; every other value is a postseason round (in the minors `L` and `W` are league playoffs and `C` is the Triple-A title game). Filter on it before computing season totals.",
               "", "Source: [MLB Stats API](https://statsapi.mlb.com). Data is extracted from box-score `stats`, never `seasonStats`.",
               "Missing statistics are null. `pitching_IP_str` uses baseball notation; use `pitching_outs` for arithmetic.",
               "", "Files are grouped by season, historical league ID, and team ID. `catalog.json` maps IDs to names and table paths.",

@@ -36,7 +36,7 @@ API = "https://statsapi.mlb.com/api/v1"
 LEVEL_BY_SPORT = {1: "MLB", 11: "Triple-A", 12: "Double-A", 13: "High-A", 14: "Single-A", 16: "Rookie / complex"}
 LEVEL_ORDER = ["MLB", "Triple-A", "Double-A", "High-A", "Single-A", "Rookie / complex", "Other league", "No team", "Unknown"]
 # How the scanner labels its own levels.
-DATA_LEVEL = {"AAA": "Triple-A", "AA": "Double-A", "A+": "High-A", "A": "Single-A", "R": "Rookie / complex"}
+DATA_LEVEL = {"AAA": "Triple-A", "AA": "Double-A", "A+": "High-A", "A": "Single-A", "R": "Rookie / complex", "WIN": "Other league"}
 STATES = ["Active", "Injured list", "Restricted list", "Suspended", "Development list"]
 
 # Level chips: (background, text). Soft tints, all >= 4.5:1 contrast.

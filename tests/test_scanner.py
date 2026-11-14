@@ -15,7 +15,7 @@ from scanner.dataset import merge_games, dataset_card
 from scanner.fetch import MLBClient, FetchError
 from scanner.game_log import parse_boxscore
 from scanner.schema import schema_for, stats_columns
-from scanner.state import initial_state, choose_season, game_signature, needs_fetch
+from scanner.state import initial_state, choose_season, game_signature, needs_fetch, still_played
 from scanner.storage import LocalStore, HubStore, json_bytes, read_json, safe_path
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -25,17 +25,17 @@ def at(day):
     return datetime.fromisoformat(day + "T09:00:00+00:00")
 
 
-def sample(season=2021, pk=1, day=None):
+def sample(season=2021, pk=1, day=None, sport=12, kind="R"):
     game = {
-        "gamePk": pk, "season": str(season), "sport_id": 12,
-        "gameType": "R", "officialDate": day or f"{season}-06-01",
+        "gamePk": pk, "season": str(season), "sport_id": sport,
+        "gameType": kind, "officialDate": day or f"{season}-06-01",
         "gameDate": f"{season}-06-01T23:00:00Z", "gameNumber": 1,
         "status": {"abstractGameState": "Final", "detailedState": "Final"}, "teams": {},
     }
     box = {"teams": {}}
     for side, team_id, score in (("home", 10, 2), ("away", 20, 1)):
         team = {"id": team_id, "name": f"Team {team_id}",
-                "league": {"id": 113, "name": "Eastern League"}, "sport": {"id": 12}}
+                "league": {"id": 113, "name": "Eastern League"}, "sport": {"id": sport}}
         game["teams"][side] = {"team": team, "score": score}
         batter_id, pitcher_id = team_id * 10, team_id * 10 + 1
         box["teams"][side] = {
@@ -266,11 +266,12 @@ def test_historical_empty_or_missing_level_is_not_complete(tmp_path):
     assert not (tmp_path / "state/index.json").exists()
 
 
-def test_scope_and_malformed_state_fail_closed(tmp_path):
+def test_narrower_scope_and_malformed_state_fail_closed(tmp_path):
     store = LocalStore(tmp_path)
-    store.commit({"state/index.json": json_bytes(initial_state(settings()))}, "state")
-    with pytest.raises(ValueError, match="scope"):
-        run(Settings(), FakeClient([]), store, at("2026-09-10"))
+    store.commit({"state/index.json": json_bytes(initial_state(Settings()))}, "state")
+    for narrower in (settings(), Settings(game_types=("R",)), Settings(start_season=2022)):
+        with pytest.raises(ValueError, match="scope"):
+            run(narrower, FakeClient([]), store, at("2026-09-10"))
     store.commit({"state/index.json": b"not json"}, "broken")
     with pytest.raises(ValueError):
         run(settings(), FakeClient([]), store, at("2026-09-10"))
@@ -430,3 +431,208 @@ def test_confirmed_remote_missing_file_is_allowed_for_new_dataset(monkeypatch):
         raise RemoteEntryNotFoundError("remote file does not exist", response=response)
     monkeypatch.setattr("scanner.storage.hf_hub_download", missing)
     assert read_json(store, "state/index.json", {"new": True}) == {"new": True}
+
+
+def test_triple_a_and_postseason_rows_keep_their_level_and_game_type(tmp_path):
+    client = FakeClient([sample(pk=1, sport=11), sample(pk=2, day="2021-09-25", sport=11, kind="W"),
+                         sample(pk=3, day="2021-07-14", sport=11, kind="A")])
+    store = LocalStore(tmp_path)
+    assert run(Settings(sport_ids=(11,)), client, store, at("2026-09-10"))["games_fetched"] == 3
+    rows = read_table(store, "data/season-2021/league-113/team-10/batting.parquet").to_pylist()
+    assert [(r["team_level"], r["sport_id"], r["game_type"]) for r in rows] == [
+        ("AAA", 11, "R"), ("AAA", 11, "A"), ("AAA", 11, "W")]
+    assert read_json(store, "catalog.json", {})["2021/113/10"]["team_level"] == "AAA"
+
+
+def test_schedule_asks_for_and_keeps_only_configured_game_types(monkeypatch):
+    games = [sample(pk=pk, kind=kind)[0] for pk, kind in ((1, "R"), (2, "W"), (3, "S"))]
+    asked = []
+    def get(path, params):
+        asked.append(params["gameTypes"])
+        return {"totalGames": 3, "dates": [{"games": deepcopy(games)}]}
+    client = MLBClient(settings())
+    monkeypatch.setattr(client, "get", get)
+    assert [g["gamePk"] for g in client.schedule(2021)] == [1, 2]
+    client = MLBClient(settings(game_types=("R",)))
+    monkeypatch.setattr(client, "get", get)
+    assert [g["gamePk"] for g in client.schedule(2021)] == [1]
+    assert asked == ["R,F,D,L,W,C,P,A,E", "R"]
+
+
+def test_settings_read_levels_and_game_types_from_environment(monkeypatch):
+    monkeypatch.setenv("SPORT_IDS", "12, 11")
+    monkeypatch.setenv("GAME_TYPES", "w,R")
+    assert Settings.from_env().scope() == {"start_season": 2021, "sport_ids": [11, 12], "game_types": ["R", "W"]}
+    monkeypatch.delenv("SPORT_IDS")
+    monkeypatch.delenv("GAME_TYPES")
+    assert Settings.from_env() == Settings()
+    assert Settings().scope()["sport_ids"] == [11, 12, 13, 14, 17]
+    for bad in ({"game_types": ("S",)}, {"game_types": ()}, {"sport_ids": (16,)}, {"game_types": ("R", "R")}):
+        with pytest.raises(ValueError):
+            Settings(**bad)
+
+
+def test_wider_scope_reopens_finished_seasons_and_fetches_only_new_games(tmp_path):
+    old = Settings(sport_ids=(12,), game_types=("R",))
+    client = FakeClient([sample(2021, 1), sample(2022, 2)])
+    store = LocalStore(tmp_path)
+    for day in ("2026-09-10", "2026-09-11"):
+        assert run(old, client, store, at(day))["status"] == "complete"
+    # The upgraded workflow adds Triple-A and the postseason to a dataset that was already complete.
+    client.samples += [sample(2021, 3, sport=11), sample(2021, 4, "2021-09-25", kind="W"), sample(2022, 5, sport=11)]
+    new = Settings(sport_ids=(11, 12), start_season=2021)
+    first = run(new, client, store, at("2026-09-12"))
+    assert (first["season"], first["games_fetched"], first["status"]) == (2021, 2, "complete")
+    assert run(new, client, store, at("2026-09-12"))["status"] == "waiting"
+    state = read_json(store, "state/index.json", {})
+    assert state["scope"] == new.scope()
+    assert state["seasons"]["2021"]["final_complete"] and not state["seasons"]["2022"]["initialized"]
+    second = run(new, client, store, at("2026-09-13"))
+    assert (second["season"], second["games_fetched"], second["stored_games"]) == (2022, 1, 2)
+    assert client.calls == [1, 2, 3, 4, 5]
+    rows = read_table(store, "data/season-2021/league-113/team-10/batting.parquet").to_pylist()
+    assert sorted((r["game_pk"], r["team_level"], r["game_type"]) for r in rows) == [(1, "AA", "R"), (3, "AAA", "R"), (4, "AA", "W")]
+    with pytest.raises(ValueError, match="scope"):
+        run(old, client, store, at("2026-09-14"))
+
+
+def test_postponed_game_is_collected_once_it_is_made_up(tmp_path):
+    # A postponed game is "Final" with no score, so it is excluded. The make-up keeps the same
+    # game ID: the exclusion must end when the schedule entry changes, and only then.
+    config = settings(start_season=2026)
+    game, box = sample(2026, 1, "2026-06-01")
+    game["teams"]["home"]["score"] = None
+    client, store = FakeClient([(game, box)]), LocalStore(tmp_path)
+    assert run(config, client, store, at("2026-06-02"))["excluded_games"] == 1
+    assert run(config, client, store, at("2026-06-03"))["games_fetched"] == 0
+    assert client.calls == [1]
+    game["teams"]["home"]["score"] = 2
+    made_up = run(config, client, store, at("2026-06-21"))
+    assert (made_up["games_fetched"], made_up["excluded_games"], made_up["stored_games"]) == (1, 0, 1)
+    assert read_json(store, "state/index.json", {})["seasons"]["2026"]["excluded_games"] == {}
+
+
+def test_exclusion_recorded_before_signatures_is_checked_once_more(tmp_path):
+    config = settings()
+    broken, good = sample(pk=1), sample(pk=2)
+    broken[0]["teams"]["home"]["score"] = None
+    client, store = FakeClient([broken, good]), LocalStore(tmp_path)
+    def reopen(legacy=False):
+        state = read_json(store, "state/index.json", {})
+        state["seasons"]["2021"].update(initialized=False, final_complete=False)
+        if legacy:
+            del state["seasons"]["2021"]["excluded_games"]["1"]["signature"]  # as written by the previous release
+        store.commit({"state/index.json": json_bytes(state)}, "reopen")
+    run(config, client, store, at("2026-09-10"))
+    reopen(legacy=True)
+    assert run(config, client, store, at("2026-09-11"))["excluded_games"] == 1
+    reopen()
+    assert run(config, client, store, at("2026-09-12"))["status"] == "complete"
+    assert client.calls == [1, 2, 1]
+
+
+def test_runs_forgotten_through_the_off_season_are_caught_up_year_by_year(tmp_path):
+    config = settings(start_season=2026)
+    client = FakeClient([sample(2026, 1, "2026-07-30")])
+    store = LocalStore(tmp_path)
+    assert run(config, client, store, at("2026-08-01"))["games_fetched"] == 1
+    # Nobody runs the job from August until the next May.
+    client.samples += [sample(2026, 2, "2026-08-20"), sample(2026, 3, "2026-09-25", kind="W"),
+                       sample(2027, 4, "2027-04-10")]
+    first = run(config, client, store, at("2027-05-10"))
+    assert (first["season"], first["games_fetched"], first["status"]) == (2026, 2, "complete")
+    assert run(config, client, store, at("2027-05-10"))["status"] == "waiting"
+    second = run(config, client, store, at("2027-05-11"))
+    assert (second["season"], second["games_fetched"]) == (2027, 1)
+    state = read_json(store, "state/index.json", {})
+    assert state["seasons"]["2026"]["final_complete"] and state["seasons"]["2027"]["initialized"]
+    assert client.calls == [1, 2, 3, 4]
+
+
+def test_a_year_that_was_never_run_is_scraped_before_the_current_one(tmp_path):
+    config = settings(start_season=2026)
+    client = FakeClient([sample(2026, 1), sample(2027, 2), sample(2028, 3, "2028-04-10")])
+    store = LocalStore(tmp_path)
+    run(config, client, store, at("2026-06-02"))
+    days = ("2028-05-01", "2028-05-02", "2028-05-03")
+    assert [run(config, client, store, at(day))["season"] for day in days] == [2026, 2027, 2028]
+    assert client.calls == [1, 2, 3]
+
+
+def test_winter_season_stays_open_into_the_new_year_and_closes_after_its_last_game(tmp_path):
+    config = Settings(sport_ids=(12, 17), start_season=2026)
+    summer = sample(2026, 9, "2026-06-01")
+    december, january = sample(2026, 1, "2026-12-20", sport=17), sample(2026, 2, "2027-01-20", sport=17)
+    january[0]["status"]["abstractGameState"] = "Preview"
+    client, store = FakeClient([summer, december, january]), LocalStore(tmp_path)
+    final = lambda: read_json(store, "state/index.json", {})["seasons"]["2026"]["final_complete"]
+    assert run(config, client, store, at("2026-12-21"))["games_fetched"] == 2
+    # New Year: the 2026 season still has a game to play, so it is not closed and 2027 does not start.
+    saved = store.read("state/index.json")
+    new_year = run(config, client, store, at("2027-01-02"))
+    assert (new_year["season"], new_year["games_fetched"]) == (2026, 0)
+    assert store.read("state/index.json") == saved  # a quiet day writes nothing
+    january[0]["status"]["abstractGameState"] = "Final"
+    played = run(config, client, store, at("2027-01-21"))
+    assert (played["season"], played["games_fetched"]) == (2026, 1) and not final()
+    # Stat corrections still arrive inside the refresh window, as for a current season.
+    assert run(config, client, store, at("2027-01-22"))["games_fetched"] == 1
+    # Frozen 30 days after the last game, not before; the next year starts the day after.
+    assert run(config, client, store, at("2027-02-18"))["season"] == 2026 and not final()
+    assert run(config, client, store, at("2027-02-19"))["season"] == 2026 and final()
+    assert run(config, client, store, at("2027-02-19"))["status"] == "waiting"
+    assert run(config, client, store, at("2027-02-20"))["season"] == 2027
+    assert client.calls == [9, 1, 2, 2]
+    row = read_table(store, "data/season-2026/league-113/team-10/batting.parquet").to_pylist()[-1]
+    assert (row["season"], row["game_date"], row["team_level"]) == (2026, "2027-01-20", "WIN")
+
+
+def test_stray_scheduled_game_cannot_hold_a_past_season_open_beyond_march(tmp_path):
+    config = settings(start_season=2026)
+    stray = sample(2026, 2, "2027-09-01")
+    stray[0]["status"]["abstractGameState"] = "Preview"
+    client, store = FakeClient([sample(2026, 1), stray]), LocalStore(tmp_path)
+    final = lambda: read_json(store, "state/index.json", {})["seasons"]["2026"]["final_complete"]
+    run(config, client, store, at("2026-06-02"))
+    assert run(config, client, store, at("2027-03-30"))["season"] == 2026 and not final()
+    assert run(config, client, store, at("2027-03-31"))["season"] == 2026 and final()
+    assert run(config, client, store, at("2027-04-01"))["season"] == 2027
+
+
+def test_schedule_remembers_the_last_day_a_game_is_listed_under(monkeypatch):
+    # Shapes taken from the live feed. A postponed game keeps its entry on the old day, with the new
+    # official date; a suspended game is listed again on the day it resumes, with nothing else changed.
+    postponed, makeup = sample(pk=1, day="2021-06-20")[0], sample(pk=1, day="2021-06-20")[0]
+    makeup["status"]["abstractGameState"] = "Preview"
+    suspended = sample(pk=2, day="2021-06-02")[0]
+    suspended["status"]["abstractGameState"] = "Live"
+    data = {"totalGames": 4, "dates": [{"date": "2021-06-01", "games": [postponed]},
+                                       {"date": "2021-06-02", "games": [suspended]},
+                                       {"date": "2021-06-20", "games": [makeup]},
+                                       {"date": "2021-07-04", "games": [deepcopy(suspended)]}]}
+    client = MLBClient(settings())
+    monkeypatch.setattr(client, "get", lambda *args, **kwargs: data)
+    games = {g["gamePk"]: g for g in client.schedule(2021)}
+    assert games[1]["status"]["abstractGameState"] == "Final" and games[1]["listed_until"] == "2021-06-20"
+    assert (games[2]["officialDate"], games[2]["listed_until"]) == ("2021-06-02", "2021-07-04")
+    schedule = list(games.values())
+    assert still_played(schedule, 2021, date(2021, 8, 2)) and not still_played(schedule, 2021, date(2021, 8, 3))
+
+
+def test_game_waiting_to_be_resumed_next_year_keeps_its_season_open(tmp_path, monkeypatch):
+    # The real client and the run together: only the day the suspended game is listed under says that
+    # the 2026 season is not over.
+    played, box = sample(2026, 1, "2026-11-01", sport=17)
+    suspended = sample(2026, 2, "2026-11-02", sport=17)[0]
+    suspended["status"]["abstractGameState"] = "Live"
+    listing = {"totalGames": 3, "dates": [{"date": "2026-11-01", "games": [played]},
+                                          {"date": "2026-11-02", "games": [suspended]},
+                                          {"date": "2027-02-10", "games": [deepcopy(suspended)]}]}
+    config = Settings(sport_ids=(17,), start_season=2026)
+    client = MLBClient(config)
+    monkeypatch.setattr(client, "get", lambda path, params=None: deepcopy(box if "boxscore" in path else listing))
+    store = LocalStore(tmp_path)
+    assert run(config, client, store, at("2026-11-03"))["games_fetched"] == 1
+    result = run(config, client, store, at("2027-01-05"))
+    assert result["season"] == 2026
+    assert not read_json(store, "state/index.json", {})["seasons"]["2026"]["final_complete"]

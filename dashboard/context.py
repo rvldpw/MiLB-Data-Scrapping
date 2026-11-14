@@ -5,8 +5,10 @@ import pandas as pd
 import streamlit as st
 
 from dashboard import bio
-from dashboard.data_loader import ROOT, DATASET_ID, LEVEL_LABEL, source_catalog, load_partition, server_token
+from dashboard.data_loader import ROOT, DATASET_ID, LEVEL_LABEL, GAME_KIND, source_catalog, load_partition, server_token
 from dashboard.ui import coverage, scope_bar
+
+GAMES_NOTE = {"Postseason": "Postseason", "Exhibition": "All-Star and exhibition", "All": "All games"}
 
 
 @dataclass
@@ -23,6 +25,7 @@ class Context:
     end: object
     revision: str
     pool: str = "Everyone who played"
+    games: str = "Regular"
 
     @property
     def multi_season(self):
@@ -39,7 +42,18 @@ class Context:
 
     @property
     def description(self):
-        return f"{self.period} · {LEVEL_LABEL.get(self.level, self.level)} · {self.league}"
+        note = GAMES_NOTE.get(self.games)
+        return f"{self.period} · {LEVEL_LABEL.get(self.level, self.level)} · {self.league}" + (f" · {note}" if note else "")
+
+
+def game_kind(frame):
+    """Regular, Postseason or Exhibition for every row (`game_type` is never empty: see clean_data)."""
+    return frame["game_type"].map(GAME_KIND).fillna("Postseason")
+
+
+def by_games(frame, games):
+    """Keep one kind of game, or All of them."""
+    return frame if games == "All" else frame[game_kind(frame) == games]
 
 
 def load_context():
@@ -95,6 +109,16 @@ def load_context():
             except Exception:
                 st.error("This league could not be loaded. Check that its Parquet files match the catalog, then refresh the source.")
                 st.stop()
+            kinds = [kind for kind in ("Regular", "Postseason", "Exhibition")
+                     if game_kind(batting).eq(kind).any() or game_kind(pitching).eq(kind).any()]
+            games = kinds[0] if kinds else "Regular"
+            if len(kinds) > 1:
+                # Season totals stay regular-season unless the reader asks for other games.
+                if st.session_state.get("scope_games") not in (*kinds, "All"):
+                    st.session_state.pop("scope_games", None)  # the last league offered a kind this one lacks
+                games = st.radio("Games", [*kinds, "All"], key="scope_games",
+                                 help="Postseason, All-Star and exhibition games are kept apart from season totals.")
+                batting, pitching = by_games(batting, games), by_games(pitching, games)
             pool = "Everyone who played"
             here = bio.DATA_LEVEL.get(level, LEVEL_LABEL.get(level, level))
             choice = st.selectbox("Players", ["Everyone who played", f"Still at {here} today", "Moved up to a higher level", "Pick current levels…"],
@@ -134,12 +158,14 @@ def load_context():
         if df.empty:
             return df
         return df[df["game_date"].between(pd.Timestamp(start), pd.Timestamp(end))].copy()
-    return Context(within(batting), within(pitching), (int(lo), int(hi)), level, names[lid], int(lid), source, location, start, end, revision, pool)
+    return Context(within(batting), within(pitching), (int(lo), int(hi)), level, names[lid], int(lid), source, location, start, end, revision, pool, games)
 
 
 def context_note(ctx):
     items = [("Seasons", ctx.period), ("Level", LEVEL_LABEL.get(ctx.level, ctx.level)), ("League", ctx.league),
              ("Dates", f"{ctx.start:%d %b %Y} – {ctx.end:%d %b %Y}")]
+    if ctx.games in GAMES_NOTE:
+        items.append(("Games", GAMES_NOTE[ctx.games]))
     if ctx.pool != "Everyone who played":
         items.append(("Players", ctx.pool))
     scope_bar(items)

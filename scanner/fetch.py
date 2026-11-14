@@ -39,10 +39,11 @@ class MLBClient:
             time.sleep(self.settings.request_delay)
 
     def schedule(self, season):
-        games = {}
+        games, types = {}, self.settings.game_types
+        wanted = ",".join(types)
         for sport_id in self.settings.sport_ids:
             data = self.get("/api/v1/schedule", {
-                "sportId": sport_id, "season": season, "gameTypes": "R", "hydrate": "team",
+                "sportId": sport_id, "season": season, "gameTypes": wanted, "hydrate": "team",
             })
             if not isinstance(data.get("dates"), list) or "totalGames" not in data:
                 raise FetchError(f"Incomplete schedule response for {season}, sport {sport_id}")
@@ -52,15 +53,19 @@ class MLBClient:
                     raise FetchError("Schedule date is missing its game list")
                 for game in day["games"]:
                     returned += 1
-                    if game.get("gameType") != "R" or int(game.get("season", 0)) != season:
+                    if game.get("gameType") not in types or int(game.get("season", 0)) != season:
                         continue
                     if not game.get("gamePk") or not game.get("officialDate") or not game.get("status"):
                         raise FetchError("Schedule game is missing its ID, date, or status")
-                    game = dict(game, sport_id=sport_id)
                     key = str(game["gamePk"])
                     previous = games.get(key)
+                    # A postponed or suspended game is listed again on the day it will be played: keep the
+                    # last day it appears under (a game waiting to be resumed carries no other sign of it).
+                    listed = max(day.get("date") or "", game.get("resumeGameDate") or "", game["officialDate"],
+                                 previous["listed_until"] if previous else "")
                     if previous is None or game["status"].get("abstractGameState") == "Final":
-                        games[key] = game
+                        games[key] = dict(game, sport_id=sport_id)
+                    games[key]["listed_until"] = listed
             if returned != data["totalGames"]:
                 raise FetchError(f"Truncated schedule: expected {data['totalGames']}, received {returned}")
             log.info("Schedule %s sport %s: %s entries", season, sport_id, returned)

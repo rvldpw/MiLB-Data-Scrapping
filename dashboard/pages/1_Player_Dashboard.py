@@ -5,9 +5,12 @@ from dashboard import charts, bio, news
 from dashboard.assets import player_photo_html
 from dashboard.context import context_note
 from dashboard.data_loader import LEVEL_LABEL
-from dashboard.glossary import label
-from dashboard.metrics import line_for, enriched_line, player_table, rolling_rate, split_table
-from dashboard.ui import plain, pretty, field_name, without_internals, hero, section, identity, stat_cards, facts_row, league_delta, chart, fmt, sample_note, metric_help, stat_sheet, download_button, news_list
+from dashboard.glossary import label, code, direction
+from dashboard.metrics import (line_for, enriched_line, player_table, rolling_rate, split_table, batting_streaks, start_summary,
+                               game_score, similar_players, SIMILAR_KEYS)
+from dashboard.ui import (plain, pretty, field_name, without_internals, hero, section, identity, stat_cards, facts_row, league_delta,
+                          chart, fmt, sample_note, metric_help, stat_sheet, download_button, news_list, key_facts, card_name,
+                          metric_columns, jump_to_player)
 
 ctx = st.session_state["_context"]
 arriving = st.session_state.pop("_goto_player", None)
@@ -86,7 +89,7 @@ path = (pdf.groupby(["season", "team_level", "team_name"], sort=True)["game_pk"]
         .rename(columns={"season": "Season", "team_level": "Level", "team_name": "Team"}))
 sample_note(line, kind)
 headline = ["OPS", "OBP", "ISO", "K_pct"] if kind == "batting" else ["ERA", "WHIP", "K_BB_pct", "IP"]
-stat_cards([{"label": label(k), "value": fmt(line[k], k),
+stat_cards([{"label": card_name(k), "value": fmt(line[k], k),
              "delta": league_delta(line.get(k), cohort.get(k), k, kind),
              "sub": f"League {fmt(cohort.get(k), k)}" if k != "IP" else "5.2 means 5 innings and 2 outs"} for k in headline])
 metric_help(headline, kind)
@@ -101,10 +104,13 @@ with tabs[0]:
         with sub[0]:
             metric = st.selectbox("Trend metric", opts, format_func=label, key=f"trend_metric_{kind}")
         with sub[1]:
-            window = st.select_slider("Games in each point", options=[1, 3, 5, 10, 15, 30], value=10, key=f"trend_window_{kind}")
-        rolling = rolling_rate(pdf, kind, window, metric)
+            window = st.select_slider("Games in each point", options=[1, 3, 5, 10, 15, 30, "Season"], value=10, key=f"trend_window_{kind}",
+                                      help="Season shows the running total after every game.")
+        whole = window == "Season"
+        rolling = rolling_rate(pdf, kind, len(pdf) + 1 if whole else window, metric)
         chart(charts.trend(rolling, metric, cohort.get(metric)), "player_trend")
-        st.caption(f"Latest point covers {int(rolling['Games in window'].iloc[-1]) if not rolling.empty else 0} of {window} appearances. Lines break between seasons.")
+        st.caption("Season to date after every game. Lines break between seasons." if whole else
+                   f"Latest point covers {int(rolling['Games in window'].iloc[-1]) if not rolling.empty else 0} of {window} appearances. Lines break between seasons.")
     with b:
         section("Compared with other players", "Same seasons, league and dates. Longer bar = better. 50 is average, 90 means better than 90 of 100 players.")
         min_sample = st.number_input("Others need at least this many plate appearances" if kind == "batting" else "Others need at least this many innings", min_value=0, value=0 if ctx.source == "Included sample" else 100 if kind == "batting" else 20, step=5, key=f"peer_min_{kind}")
@@ -116,11 +122,48 @@ with tabs[0]:
         else:
             st.info("Percentiles need at least five peers. Lower the minimum or widen the dates.")
 
+    recent_n = 10
+    ordered = pdf.sort_values(["game_date", "game_pk"])
+    if len(ordered) > recent_n:
+        recent = line_for(ordered.tail(recent_n), kind)
+        section("Form", f"Last {recent_n} appearances against this player's whole view.")
+        form_keys = ["OPS", "OBP", "ISO", "K_pct"] if kind == "batting" else ["ERA", "WHIP", "K_BB_pct", "IP"]
+        cards = []
+        for k in form_keys:
+            gap, wanted = recent.get(k) - line.get(k), direction(k, kind)
+            delta = None
+            if k != "IP" and pd.notna(gap) and fmt(abs(gap), k) != fmt(0, k):
+                delta = (f"{fmt(abs(gap), k)} {'up' if gap > 0 else 'down'}",
+                         None if wanted not in ("Higher", "Lower") else "good" if (gap > 0) == (wanted == "Higher") else "bad")
+            cards.append({"label": card_name(k), "value": fmt(recent.get(k), k), "delta": delta,
+                          "sub": f"View {fmt(line.get(k), k)}" if k != "IP" else f"of {fmt(line.get(k), k)} in view"})
+        stat_cards(cards)
+    if kind == "batting":
+        streak = batting_streaks(pdf)
+        if streak:
+            section("Streaks", "Current and best runs of games with a hit, and of games reaching base.")
+            key_facts([("Hit streak", f"{streak['hit_now']} games"), ("Best hit streak", f"{streak['hit_best']} games"),
+                       ("On-base streak", f"{streak['on_now']} games"), ("Best on-base", f"{streak['on_best']} games"),
+                       ("Games with a hit", "N/A" if pd.isna(streak["hit_share"]) else f"{streak['hit_share']:.0%}"),
+                       ("Multi-hit games", f"{streak['multi_hit']}")])
+    else:
+        starts = start_summary(pdf)
+        if starts:
+            section("Starts", "Game score: 50 is an average start, 70 is very good, 90 is dominant.")
+            key_facts([("Starts", f"{starts['starts']}"), ("Quality starts", f"{starts['quality']}"),
+                       ("Avg game score", fmt(starts["score_avg"], digits=0)), ("Best game score", fmt(starts["score_best"], digits=0)),
+                       ("Innings per start", fmt(starts["outs_avg"] / 3 if pd.notna(starts["outs_avg"]) else None, "IP"))])
+    mix = [(name, share) for name, share in ((names[pid], charts.out_shares(line, kind)), ("League", charts.out_shares(cohort, kind))) if share]
+    if len(mix) == 2:
+        section("How the outs are made", "Share of outs on balls in play: on the ground, in the air, on a line, popped up.")
+        chart(charts.out_mix(mix, kind), "player_out_mix")
+
 with tabs[1]:
     section("Game log", "Doubleheaders are separate games. Pick one below to see every field.")
-    counters = {"Hits": "batting_H", "Total bases": "batting_TB", "Strikeouts": "batting_SO", "Home runs": "batting_HR"} if kind == "batting" else {"Strikeouts": "pitching_SO", "Earned runs": "pitching_ER", "Walks": "pitching_BB", "Pitches": "pitching_PI"}
+    counters = {"Hits": "batting_H", "Times on base": "_on_base", "Total bases": "batting_TB", "Strikeouts": "batting_SO", "Home runs": "batting_HR"} if kind == "batting" else {"Game score": "_game_score", "Strikeouts": "pitching_SO", "Earned runs": "pitching_ER", "Walks": "pitching_BB", "Pitches": "pitching_PI"}
     selected = st.selectbox("Game-by-game metric", list(counters), key=f"game_metric_{kind}")
-    chart(charts.game_bars(pdf, counters[selected], selected), "player_games")
+    per_game = pdf.assign(_on_base=pdf["batting_H"] + pdf["batting_BB"] + pdf["batting_HBP"]) if kind == "batting" else pdf.assign(_game_score=game_score(pdf))
+    chart(charts.game_bars(per_game, counters[selected], selected), "player_games")
     games = pdf.sort_values(["game_date", "game_pk"], ascending=False)
     line_stats = {"AB": "batting_AB", "H": "batting_H", "HR": "batting_HR", "RBI": "batting_RBI", "BB": "batting_BB", "SO": "batting_SO"} if kind == "batting" else {"IP": "pitching_IP_str", "H": "pitching_H", "ER": "pitching_ER", "BB": "pitching_BB", "SO": "pitching_SO", "Pitches": "pitching_PI"}
     table = pd.DataFrame({"Date": games["game_date"].dt.strftime("%d %b %Y"), "Team": games["team_name"],
@@ -145,7 +188,7 @@ with tabs[2]:
     section("Breakdowns", "The same stats split by month, home or away, team or role.")
     with st.expander(f"Where this player appeared in the selected data · {len(path)} stop(s)"):
         st.dataframe(path, hide_index=True, width="stretch")
-    split_options = {"Month": "month", "Home / away": "is_home", "Team": "team_name"}
+    split_options = {"Month": "month", "Home / away": "is_home", "Opponent": "opponent_name", "Wins / losses": "result", "Team": "team_name"}
     if ctx.multi_season:
         split_options = {"Season": "season", **split_options}
     if kind == "pitching":
@@ -183,6 +226,20 @@ with tabs[3]:
         comparison = pd.DataFrame({"Metric": [label(k) for k in keys], f"{names[pid]} · {pid}": [fmt(line.get(k),k) for k in keys], f"{cmp_name} · {other}": [fmt(cmp_line.get(k),k) for k in keys]})
         st.dataframe(comparison, hide_index=True, width="stretch")
         download_button(comparison, f"compare_{pid}_{other}.csv", "Download comparison", f"compare_export_{kind}")
+    floor = 0 if ctx.source == "Included sample" else 100 if kind == "batting" else 20
+    twins = similar_players(population[population["PA" if kind == "batting" else "IP"].ge(floor) | population["player_id"].eq(pid)], pid, kind)
+    if not twins.empty:
+        section("Most similar players", f"Closest on {', '.join(code(k) for k in SIMILAR_KEYS[kind])}. Match 100 is identical; 0 is no closer than two typical players.")
+        today = bio.get_bios(twins["player_id"], with_roster=False).set_index("player_id")
+        size = "PA" if kind == "batting" else "IP"
+        table = twins.reindex(columns=["player_id", "Player", "Team", "Match", size, *SIMILAR_KEYS[kind]])
+        for k in (size, *SIMILAR_KEYS[kind]):
+            table[k] = table[k].map(lambda v, k=k: fmt(v, k))
+        table["Match"] = table["Match"].round().astype(int)
+        table.insert(3, "Level now", table["player_id"].map(today["current_level"]))
+        st.dataframe(table, hide_index=True, width="stretch", column_order=[c for c in table.columns if c != "player_id"],
+                     column_config=metric_columns(table.columns, {"Match": st.column_config.ProgressColumn("Match", min_value=0, max_value=100, format="%d")}))
+        jump_to_player(dict(zip(twins["player_id"].astype(int), twins["Player"])), f"similar_jump_{kind}", kind, "Open one of these players")
 
 with tabs[4]:
     section("Recent coverage", f"News search for \"{names[pid]}\", from Google News (ESPN, SB Nation, MiLB.com, local writers).")

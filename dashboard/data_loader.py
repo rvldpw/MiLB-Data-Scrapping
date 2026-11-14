@@ -15,7 +15,9 @@ from dashboard.metric_catalog import RAW_FIELDS
 
 ROOT = Path(__file__).resolve().parents[1]
 DATASET_ID = os.getenv("HF_REPO_ID", "rvlpw/milb-game-logs")
-LEVEL_LABEL = {"A": "Single-A", "A+": "High-A", "AA": "Double-A"}
+LEVEL_LABEL = {"A": "Single-A", "A+": "High-A", "AA": "Double-A", "AAA": "Triple-A", "WIN": "Off-season"}
+# How `game_type` codes group for readers; any other code is a postseason round.
+GAME_KIND = {"R": "Regular", "A": "Exhibition", "E": "Exhibition"}
 POSITION_ORDER = ["C", "1B", "2B", "3B", "SS", "OF", "DH", "UT"]
 POSITION_GROUP = {p: p for p in POSITION_ORDER} | {"LF": "OF", "CF": "OF", "RF": "OF", "P": "P"}
 PATH_PATTERN = re.compile(r"data/season[-=](\d+)/league[-=](\d+)/team[-=](\d+)/(batting|pitching)\.parquet$")
@@ -35,7 +37,7 @@ def clean_data(df, kind):
     df = df.copy()
     if df.empty:
         return pd.DataFrame(columns=["season", "team_level", "league_id", "league_name", "player_id", "team_id",
-                                     "player_full_name", "team_name", "game_pk", "game_date", "pos_group", "role",
+                                     "player_full_name", "team_name", "game_pk", "game_date", "game_type", "pos_group", "role",
                                      *RAW_FIELDS[kind].values()])
     aliases = {"team_league_id": "league_id", "team_league": "league_name", "team_level_id": "sport_id"}
     for old, new in aliases.items():
@@ -68,6 +70,8 @@ def clean_data(df, kind):
         if col not in df:
             df[col] = fallback
         df[col] = df[col].fillna(fallback)
+    # Files written before postseason games were collected have no game type: all regular season.
+    df["game_type"] = df["game_type"].fillna("R") if "game_type" in df else "R"
     df["month"] = df["game_date"].dt.strftime("%Y-%m")
     df["pos_group"] = df["player_position"].map(POSITION_GROUP).fillna("UT")
     if kind == "pitching":

@@ -228,13 +228,145 @@ def team_table(batting, pitching):
 
 
 def game_results(batting, pitching):
-    cols = ["game_pk", "game_date", "team_id", "team_name", "opponent_name", "team_score", "opponent_score", "result"]
+    cols = ["game_pk", "game_date", "team_id", "team_name", "opponent_name", "team_score", "opponent_score", "result", "is_home"]
     frames = [df.reindex(columns=cols) for df in (batting, pitching) if not df.empty]
     if not frames:
         return pd.DataFrame(columns=cols + ["Margin"])
     games = pd.concat(frames).drop_duplicates(["game_pk", "team_id"]).sort_values(["game_date", "game_pk"])
     games["Margin"] = games["team_score"] - games["opponent_score"]
     return games
+
+
+PYTHAGOREAN_EXPONENT = 1.83
+
+
+def expected_win_pct(scored, allowed):
+    """Share of games a team with these runs usually wins (Pythagorean expectation)."""
+    return divide(scored ** PYTHAGOREAN_EXPONENT, scored ** PYTHAGOREAN_EXPONENT + allowed ** PYTHAGOREAN_EXPONENT)
+
+
+def record_table(games, by):
+    """Wins, losses and runs for each value of `by`: a label for every game, or one label for all of them."""
+    table = games.assign(Split=by, W=games["result"].eq("W"), L=games["result"].eq("L")).groupby("Split", sort=False).agg(
+        G=("game_pk", "nunique"), W=("W", "sum"), L=("L", "sum"), RS=("team_score", "sum"), RA=("opponent_score", "sum"))
+    table[["W", "L"]] = table[["W", "L"]].astype(int)
+    table["W_pct"] = divide(table["W"], table["W"] + table["L"])
+    table["Margin"] = table["RS"] - table["RA"]
+    return table.reset_index()
+
+
+def record_splits(games):
+    """One club's record at home and away, in close games and blowouts, and month by month."""
+    games = games.sort_values(["game_date", "game_pk"])
+    gap = games["Margin"].abs()
+    parts = [record_table(games[games["is_home"].eq(home)], name) for home, name in ((True, "Home"), (False, "Away"))]
+    parts += [record_table(games[gap.eq(1)], "One-run games"), record_table(games[gap.ge(5)], "Decided by 5+")]
+    months = games["game_date"].dt.strftime("%b %Y" if games["game_date"].dt.year.nunique() > 1 else "%b")
+    return pd.concat([p for p in parts if not p.empty] + [record_table(games, months)], ignore_index=True)
+
+
+def standings_path(games):
+    """Games above .500 after every decided game, per team: the shape of each club's season."""
+    played = games[games["result"].isin(["W", "L"])].sort_values(["game_date", "game_pk"])
+    step = played["result"].eq("W").astype(int) * 2 - 1
+    return played.assign(Over=step.groupby(played["team_id"]).cumsum(), Game=played.groupby("team_id").cumcount() + 1)
+
+
+def league_by_month(batting, pitching):
+    """The league month by month: runs per team game and the pooled batting rates."""
+    games = game_results(batting, pitching)
+    if games.empty or batting.empty:
+        return pd.DataFrame(columns=["Month", "Games", "R_G", "HR_G", "OPS", "K_pct", "BB_pct"])
+    table = table_for(batting, "batting", "month")
+    scores = games.groupby(games["game_date"].dt.strftime("%Y-%m"))["team_score"]
+    table["R_G"], table["Games"] = scores.mean(), scores.size()
+    table["HR_G"] = divide(table["HR"], table["Games"])
+    stamps = pd.to_datetime(table.index + "-01")
+    table["Month"] = stamps.strftime("%b %Y" if stamps.year.nunique() > 1 else "%b")
+    return table.reset_index(drop=True)
+
+
+def run_lengths(flags):
+    """(longest run of True, run of True at the end)."""
+    best = current = 0
+    for flag in flags:
+        current = current + 1 if flag else 0
+        best = max(best, current)
+    return best, current
+
+
+def batting_streaks(df):
+    """Hitting and on-base streaks from one player's games; empty when a count is missing."""
+    need = ["batting_AB", "batting_PA", "batting_H", "batting_BB", "batting_HBP"]
+    if df.empty or any(c not in df for c in need) or df[need].isna().any().any():
+        return {}
+    games = df.sort_values(["game_date", "game_pk"])
+    official = games[games["batting_AB"] > 0]  # a game without an at-bat neither extends nor ends a hitting streak
+    faced = games[games["batting_PA"] > 0]
+    hit_best, hit_now = run_lengths(official["batting_H"] > 0)
+    on_best, on_now = run_lengths((faced["batting_H"] + faced["batting_BB"] + faced["batting_HBP"]) > 0)
+    return {"hit_best": hit_best, "hit_now": hit_now, "on_best": on_best, "on_now": on_now,
+            "hit_share": divide(int((official["batting_H"] > 0).sum()), len(official)),
+            "multi_hit": int((official["batting_H"] >= 2).sum()), "games": len(official)}
+
+
+def game_score(df):
+    """Bill James game score for each pitching appearance: 50 is an average start, 90 is dominant."""
+    outs = df["pitching_outs"]
+    return (50 + outs + 2 * (outs // 3 - 4).clip(lower=0) + df["pitching_SO"] - 2 * df["pitching_H"]
+            - 4 * df["pitching_ER"] - 2 * (df["pitching_R"] - df["pitching_ER"]) - df["pitching_BB"])
+
+
+def start_summary(df):
+    """One pitcher's starts: how many, how many were quality starts, and the game scores."""
+    starts = df[df["pitching_GS"].fillna(0) > 0] if "pitching_GS" in df else df.iloc[:0]
+    if starts.empty:
+        return {}
+    score = game_score(starts)
+    quality = (starts["pitching_outs"] >= 18) & (starts["pitching_ER"] <= 3)
+    return {"starts": len(starts), "quality": int(quality.sum()), "score_avg": float(score.mean()) if score.notna().all() else np.nan,
+            "score_best": float(score.max()) if score.notna().any() else np.nan,
+            "outs_avg": float(starts["pitching_outs"].mean()) if starts["pitching_outs"].notna().all() else np.nan}
+
+
+SIMILAR_KEYS = {"batting": ["K_pct", "BB_pct", "ISO", "AVG"], "pitching": ["K_pct", "BB_pct", "HR9", "BABIP"]}
+
+
+def similar_players(population, player_id, kind, count=5):
+    """The players whose rates sit closest to this one's, in standard deviations across the group.
+
+    Match is 100 for identical rates and 0 for a pair as far apart as two typical players.
+    """
+    keys = SIMILAR_KEYS[kind]
+    table = population.dropna(subset=keys).set_index("player_id")
+    if player_id not in table.index or len(table) < 6:
+        return table.iloc[:0].assign(Match=[]).reset_index()
+    spread = table[keys].std(ddof=0).replace(0, np.nan)
+    scaled = ((table[keys] - table[keys].mean()) / spread).fillna(0)
+    distance = np.sqrt(((scaled - scaled.loc[player_id]) ** 2).sum(axis=1)).drop(player_id)
+    typical = np.sqrt(2 * len(keys))  # expected distance between two independent standardised players
+    nearest = distance.nsmallest(count)
+    return table.loc[nearest.index].assign(Match=(100 * (1 - nearest / typical)).clip(lower=0)).reset_index()
+
+
+def season_path(df, kind, points=24):
+    """Each player's season-to-date OPS (or ERA) after every game, thinned to at most `points` values."""
+    if df.empty:
+        return pd.Series(dtype=object)
+    columns = count_columns(kind)
+    ordered = df.sort_values(["game_date", "game_pk"])
+    numbers = ordered.reindex(columns=columns).apply(pd.to_numeric, errors="coerce").fillna(0)
+    running = numbers.groupby(ordered["player_id"]).cumsum()
+    running.columns = [c.removeprefix(kind + "_") for c in running.columns]
+    running["G"] = 1
+    value = rates(running, kind)["OPS" if kind == "batting" else "ERA"]
+    # The first games swing wildly: start the line once there is something to read.
+    value = value.where(running["PA"] >= 20 if kind == "batting" else running["outs"] >= 15)
+    def thin(series):
+        values = series.dropna().tolist()
+        step = max(1, -(-len(values) // points))
+        return values[::-1][::step][::-1]  # keep the latest game
+    return value.groupby(ordered["player_id"]).apply(thin)
 
 
 def simulate_trade(df, team_a, team_b, a_out, b_out):

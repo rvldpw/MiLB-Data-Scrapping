@@ -4,6 +4,8 @@
 
 Copy the contents of this project to the root of your GitHub repository. Include hidden `.github` and `.gitignore` files. Replace the old scanner files and workflow. Remove old `apps_script/Code.gs`, `scanner/sheets_sync.py`, `scanner/metrics.py`, and `tests/test_offline.py` if you copy over an existing checkout; they are not part of this release.
 
+Updating a dataset created by release 2.0 needs no other step: see [Upgrading an existing dataset](../README.md#upgrading-an-existing-dataset).
+
 The old Google Sheet can remain as an archive. Its data is not imported: the new dataset starts fresh with actual game logs. The old `APPS_SCRIPT_URL` and `APPS_SCRIPT_SECRET` secrets are unused and can be removed.
 
 ## 2. Configure Hugging Face
@@ -28,6 +30,8 @@ Open **Actions → MiLB daily game logs → Run workflow**. Inspect logs and `st
 The checked-in workflow requests one run every day at 09:00 UTC (16:00 WIB), on the repository's default branch. This schedule becomes active only after you put the workflow in your GitHub repository and enable Actions. Scheduled GitHub jobs can be delayed; see [GitHub's schedule documentation](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#schedule).
 
 No Codex reminder, Google Sheet, Apps Script deployment, or always-on computer is required. Ensure the GitHub account has enough Actions usage for the initial backfill and the Hugging Face account has enough storage for the dataset.
+
+GitHub pauses scheduled workflows in a public repository after 60 days without repository activity and sends an email. Re-enable it under **Actions → MiLB daily game logs → Enable workflow**. Nothing is lost: the next run completes every unfinished year, oldest first, one per day.
 
 ## 4. Check completion
 

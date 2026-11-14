@@ -33,11 +33,16 @@ html, body, .stApp, .stApp :where(p,li,label,input,textarea,select,button,td,th,
 [data-testid="stIconMaterial"] { font-family:'Material Symbols Rounded'!important; }
 .stApp { background:var(--paper); color:var(--ink); }
 [data-testid="stHeader"] { background:rgba(243,246,240,.94); border-bottom:1px solid var(--line); }
-[data-testid="stSidebar"] { border-right:1px solid var(--line); }
+[data-testid="stSidebar"] { background:#123f31; border-right:1px solid var(--line); }
 [data-testid="stSidebar"] [data-testid="stCaptionContainer"] { color:#b9cdc1; }
 [data-testid="stSidebar"] h3 { font-family:var(--serif)!important; color:#ffffff!important; font-size:1.3rem!important; margin-bottom:.1rem; }
 [data-testid="stSidebar"] [data-testid="stExpander"] { background:#185a43; border-color:#2a6650!important; }
 [data-testid="stSidebar"] label, [data-testid="stSidebar"] p { color:#eef4ec; }
+[data-testid="stSidebar"] [data-testid="stSidebarNavLink"] span, [data-testid="stSidebar"] [data-testid="stIconMaterial"] { color:#eef4ec; }
+[data-testid="stSidebar"] [data-testid="stSidebarNavLink"]:hover { background:rgba(255,255,255,.08); }
+[data-testid="stSidebar"] [data-testid="stTooltipIcon"] svg { color:#b9cdc1; stroke:#b9cdc1; }
+[data-testid="stSidebar"] .stButton button p, [data-testid="stSidebar"] [data-baseweb="select"] [data-testid="stIconMaterial"],
+[data-testid="stSidebar"] [data-baseweb="input"] [data-testid="stIconMaterial"] { color:var(--ink); }
 .block-container { max-width:1400px; padding:5rem 2.6rem 3.5rem; }
 h1,h2,h3,h4 { font-family:var(--serif)!important; color:var(--ink)!important; letter-spacing:-.01em; }
 h3 { font-size:1.2rem!important; }
@@ -64,17 +69,18 @@ button:focus-visible, a:focus-visible, input:focus-visible, [role="tab"]:focus-v
 .scope > div { padding:.5rem .95rem; border-right:1px solid var(--line); min-width:0; }
 .scope > div:last-child { border-right:0; }
 .scope small { display:block; color:var(--muted); font-size:.68rem; letter-spacing:.06em; text-transform:uppercase; font-weight:500; }
-.scope b { font-weight:600; font-size:.88rem; font-variant-numeric:tabular-nums; }
+.scope b { font-weight:600; font-size:.88rem; font-variant-numeric:tabular-nums; white-space:nowrap; }
 
 .metric-strip { display:grid; grid-template-columns:repeat(var(--n,4),minmax(0,1fr)); background:var(--card); border:1px solid var(--line);
   border-radius:10px; margin:.25rem 0 1.1rem; box-shadow:0 1px 2px rgba(20,35,27,.05); overflow:hidden; }
 .metric-cell { min-width:0; padding:.85rem 1.1rem .9rem; border-left:1px solid var(--line); display:flex; flex-direction:column; gap:.1rem; }
 .metric-cell:first-child { border-left:0; }
-.metric-name { color:var(--muted); font-size:.7rem; font-weight:600; letter-spacing:.08em; text-transform:uppercase; }
+.metric-name { color:var(--muted); font-size:.7rem; font-weight:600; letter-spacing:.08em; text-transform:uppercase;
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .metric-value { font-variant-numeric:tabular-nums; font-size:clamp(1.45rem,1.15rem + .9vw,1.85rem); font-weight:600; letter-spacing:-.025em;
   line-height:1.15; color:var(--ink); overflow-wrap:anywhere; }
 .metric-value.txt { font-size:1.05rem; font-weight:550; letter-spacing:0; line-height:1.35; }
-.metric-note { color:var(--muted); font-size:.75rem; line-height:1.4; }
+.metric-note { color:var(--muted); font-size:.75rem; line-height:1.4; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .delta { display:inline-flex; align-items:center; gap:.25rem; font-size:.73rem; font-weight:600; border-radius:4px; padding:.1rem .4rem;
   background:#eef1ec; color:var(--muted); width:fit-content; font-variant-numeric:tabular-nums; }
 .delta.good { background:var(--grass-soft); color:#0b5a37; }
@@ -93,7 +99,11 @@ button:focus-visible, a:focus-visible, input:focus-visible, [role="tab"]:focus-v
 @media(max-width:700px){ .note-grid{grid-template-columns:1fr;} }
 .coverage { display:flex; gap:.6rem; align-items:baseline; padding:.6rem .9rem; background:var(--gold-soft); color:#6b4a00; border-radius:6px; font-size:.82rem; margin:0 0 1rem; }
 .coverage b { font-weight:600; white-space:nowrap; }
-.identity { display:flex; align-items:center; gap:1.3rem; margin:.5rem 0 1.1rem; }
+.identity { display:flex; align-items:flex-start; gap:1.3rem; margin:.5rem 0 1.1rem; }
+.identity > div:last-child { flex:1; min-width:0; }
+.identity .facts { display:grid; grid-template-columns:repeat(auto-fit,minmax(215px,1fr)); gap:.7rem 0; }
+.identity .facts .fact { padding:0 1rem 0 0; border-left:0; }
+.identity .facts .fact span { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .identity-photo { flex-shrink:0; line-height:0; }
 .identity h1 { font-size:2.2rem!important; margin:0 0 .55rem!important; line-height:1.1!important; padding:0!important; }
 .facts { display:flex; flex-wrap:wrap; gap:.6rem 0; }
@@ -106,11 +116,32 @@ button:focus-visible, a:focus-visible, input:focus-visible, [role="tab"]:focus-v
 .fact small { display:block; color:var(--muted); font-size:.68rem; letter-spacing:.06em; text-transform:uppercase; font-weight:500; margin-bottom:.15rem; }
 .fact span { font-size:.95rem; font-weight:600; display:block; }
 .fact .sub { display:block; color:var(--muted); font-size:.76rem; font-weight:400; margin-top:.1rem; }
-.lvl { display:inline-block; border-radius:4px; padding:.12rem .55rem; font-size:.78rem; font-weight:600; white-space:nowrap; }
+.lvl, .fact .lvl { display:inline-block; border-radius:4px; padding:.12rem .55rem; font-size:.78rem; font-weight:600; white-space:nowrap; }
 .subtle { color:var(--muted); font-size:.82rem; }
 .footer { margin-top:2.5rem; padding-top:.9rem; border-top:1px solid var(--line); color:var(--muted); font-size:.76rem; }
-@media(max-width:900px){ .block-container{padding:4.5rem 1rem 3rem;} .metric-strip{grid-template-columns:repeat(2,minmax(0,1fr));} .metric-cell:nth-child(odd){border-left:0;} .metric-cell:nth-child(n+3){border-top:1px solid var(--line);} .metric-cell{padding:.75rem .9rem;} .metric-cell:last-child:nth-child(odd){grid-column:1/-1;} .scope > div{flex:1 1 40%; border-bottom:1px solid var(--line);} }
-@media(max-width:600px){ .pagehead h1,.identity h1{font-size:1.75rem!important;} .metric-value{font-size:1.5rem;} .identity{align-items:flex-start;gap:.75rem;} .fact{padding:0 .8rem 0 0;border-left:0;flex:1 1 45%;} .metric-cell{padding:.75rem .8rem;} }
+.club-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(205px,1fr)); gap:.7rem; margin:.3rem 0 1.1rem; }
+.club { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:.75rem .9rem .55rem; min-width:0; box-shadow:0 1px 2px rgba(20,35,27,.05); }
+.club-head { display:flex; align-items:center; gap:.5rem; min-width:0; }
+.club-head b { font-size:.82rem; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.club-line { display:flex; align-items:center; justify-content:space-between; gap:.5rem; margin:.35rem 0 .3rem; }
+.club-record { font-size:1.25rem; font-weight:600; font-variant-numeric:tabular-nums; letter-spacing:-.02em; }
+.spark { display:block; width:100%; height:34px; }
+.key-facts { display:grid; grid-template-columns:repeat(auto-fit,minmax(130px,1fr)); background:var(--card); border:1px solid var(--line);
+  border-radius:10px; margin:.25rem 0 1.1rem; overflow:hidden; }
+.key-facts > div { padding:.6rem .9rem; border-right:1px solid var(--line); border-bottom:1px solid var(--line); margin:0 -1px -1px 0; min-width:0; }
+.key-facts small { display:block; color:var(--muted); font-size:.68rem; letter-spacing:.06em; text-transform:uppercase; font-weight:600;
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.key-facts b { font-size:1.05rem; font-weight:600; font-variant-numeric:tabular-nums; white-space:nowrap; }
+@media(max-width:900px){ .block-container{padding:4.5rem 1rem 3rem;} .metric-strip{grid-template-columns:repeat(2,minmax(0,1fr));} .metric-cell:nth-child(odd){border-left:0;} .metric-cell:nth-child(n+3){border-top:1px solid var(--line);} .metric-cell{padding:.75rem .9rem;} .metric-cell:last-child:nth-child(odd){grid-column:1/-1;} .scope > div{flex:1 1 40%; border-bottom:1px solid var(--line);} .scope > div:nth-child(n+3){flex-basis:100%;} }
+@media(max-width:600px){ .pagehead h1,.identity h1{font-size:1.75rem!important;} .metric-value{font-size:1.5rem;} .identity{align-items:flex-start;gap:.75rem;} .fact{padding:0 .8rem 0 0;border-left:0;flex:1 1 45%;} .metric-cell{padding:.75rem .8rem;}
+  .key-facts{grid-template-columns:repeat(2,minmax(0,1fr));} .facts.card{grid-template-columns:repeat(2,minmax(0,1fr));} .facts.card .fact{border-left:0;}
+  .identity{display:grid; grid-template-columns:auto minmax(0,1fr); align-items:center; gap:.7rem .8rem;} .identity > div:last-child{display:contents;}
+  .identity h1{margin:0!important;} .identity-photo img{width:56px!important; height:56px!important;}
+  .identity .facts{grid-column:1 / -1; grid-template-columns:1fr; gap:0; border-top:1px solid var(--line);}
+  .identity .facts .fact{display:flex; justify-content:space-between; align-items:baseline; gap:.9rem; padding:.4rem 0; border-bottom:1px solid var(--line);}
+  .identity .facts .fact small{margin:0; flex-shrink:0;} .identity .facts .fact > span{text-align:right; min-width:0;}
+  .club-grid{grid-template-columns:1fr; gap:.45rem;} .club{display:grid; grid-template-columns:minmax(0,1fr) auto; column-gap:.75rem; align-items:center; padding:.55rem .8rem;}
+  .club-line{margin:0; grid-column:2; grid-row:1;} .club .spark{grid-column:1 / -1; height:26px; margin-top:.25rem;} }
 @media(prefers-reduced-motion:reduce){*{transition:none!important;scroll-behavior:auto!important;}}
 </style>
 """
@@ -157,11 +188,58 @@ def league_delta(value, league, key, kind):
     if value is None or league is None or pd.isna(value) or pd.isna(league) or key == "IP":
         return None
     gap = value - league
-    if gap == 0:
+    if fmt(abs(gap), key) == fmt(0, key):  # a gap too small to show is no gap
         return ("level with league", None)
     wanted = direction(key, kind)
     tone = None if wanted not in ("Higher", "Lower") else ("good" if (gap > 0) == (wanted == "Higher") else "bad")
     return (f"{fmt(abs(gap), key)} {'above' if gap > 0 else 'below'} league", tone)
+
+
+def sparkline(values, width=120, height=30):
+    """An inline line for a short series around zero: green when it ends at or above zero, clay below."""
+    values = [float(v) for v in values]
+    if len(values) < 2:
+        return "<svg class='spark' viewBox='0 0 120 30'></svg>"
+    low, high = min(values + [0]), max(values + [0])
+    scale = (height - 4) / ((high - low) or 1)
+    y = lambda v: height - 2 - (v - low) * scale
+    points = " ".join(f"{i * width / (len(values) - 1):.1f},{y(v):.1f}" for i, v in enumerate(values))
+    color = ACCENT if values[-1] >= 0 else BAD
+    return (f"<svg class='spark' viewBox='0 0 {width} {height}' preserveAspectRatio='none' role='img' aria-label='Wins minus losses through the season'>"
+            f"<line x1='0' x2='{width}' y1='{y(0):.1f}' y2='{y(0):.1f}' stroke='#c9d3c5' stroke-dasharray='3 3' vector-effect='non-scaling-stroke'/>"
+            f"<polyline points='{points}' fill='none' stroke='{color}' stroke-width='2' stroke-linejoin='round' vector-effect='non-scaling-stroke'/></svg>")
+
+
+def club_cards(rows):
+    """One card per club: logo, name, record, run difference and the path of its season. `logo` is trusted markup."""
+    items = ""
+    for r in rows:
+        tone = "good" if r["margin"] > 0 else "bad" if r["margin"] < 0 else ""
+        items += (f"<div class='club'><div class='club-head'>{r['logo']}<b title='{e(r['name'])}'>{e(r['name'])}</b></div>"
+                  f"<div class='club-line'><span class='club-record'>{e(r['record'])}</span>"
+                  f"<span class='delta {tone}'>{e(r['diff'])}</span></div>{sparkline(r['path'])}</div>")
+    st.markdown(f"<div class='club-grid'>{items}</div>", unsafe_allow_html=True)
+
+
+def key_facts(items):
+    """A tidy grid of small labelled figures: every cell one line, all the same height."""
+    cells = "".join(f"<div><small>{e(k)}</small><b>{e(v)}</b></div>" for k, v in items)
+    st.markdown(f"<div class='key-facts'>{cells}</div>", unsafe_allow_html=True)
+
+
+def metric_columns(columns, extra=None):
+    """Short conventional headers (OPS, K%) with the full name on hover, so a wide table fits the page."""
+    config = {c: st.column_config.Column(code(c), help=label(c)) for c in columns if c in METRICS or c in COUNT_NAMES}
+    return {**config, **(extra or {})}
+
+
+# Card titles short enough to stay on one line on a phone.
+CARD_NAMES = {"OPS": "OPS", "OBP": "On-base %", "ISO": "Power (ISO)", "K_pct": "Strikeout rate", "BB_pct": "Walk rate",
+              "ERA": "ERA", "WHIP": "WHIP", "K_BB_pct": "K minus BB %", "IP": "Innings", "AVG": "Average", "SLG": "Slugging %"}
+
+
+def card_name(key):
+    return CARD_NAMES.get(key, code(key))
 
 
 def scope_bar(items):
@@ -276,8 +354,11 @@ def jump_to_player(options, key, kind, label="Open a player"):
 
 
 def chart(fig, key=None):
+    # Only the picture button stays: zoom and pan tools cover the labels of small charts.
     st.plotly_chart(fig, width="stretch", theme=None, key=key,
-                    config={"displaylogo": False, "responsive": True, "toImageButtonOptions": {"format": "png", "scale": 2}})
+                    config={"displaylogo": False, "responsive": True, "toImageButtonOptions": {"format": "png", "scale": 2},
+                            "modeBarButtonsToRemove": ["zoom2d", "pan2d", "select2d", "lasso2d", "zoomIn2d", "zoomOut2d",
+                                                       "autoScale2d", "resetScale2d"]})
 
 
 def download_button(df, filename, label="Download table", key=None):

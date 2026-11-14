@@ -26,7 +26,8 @@ HF_TOKEN = "your-read-token"
 The sidebar filters apply to every page.
 
 - **From / To season.** Pick different seasons to cover several years, for example 2021 to 2023. Rates and peer averages then pool all of them.
-- **Level and league.**
+- **Level and league.** The off-season leagues (Arizona Fall League, winter leagues, Caribbean Series) are one level, *Off-season*; their season is the year they start in.
+- **Games.** Shown when the league has more than regular-season games: Regular (the default), Postseason, Exhibition (All-Star games and exhibitions) or All. Season totals stay regular-season unless you change it; the scope bar, reports and scenarios say when other games are included.
 - **Players.** Everyone who played, only those still at this level today, only those who moved up, or any levels you pick.
 - **Exact dates.** Narrows the chosen seasons to a start and end date.
 
@@ -38,9 +39,9 @@ Lookups are cached in `dashboard/cache/` (people for 3 days, teams and rosters f
 
 ## Pages
 
-- **Overview.** Player leaderboard (ranked, with each player's level today), league averages, a scatter of all players, and a team table with records and run differences. Under the leaderboard, *Open one of these players* jumps straight to that player's page.
-- **Player lab.** One player: trend, peer percentiles, game log, splits, comparison, news, full metric sheet and a downloadable report.
-- **Team room.** Record, offense by position, roster, starters vs. relievers, results. The roster has the same *Open one of these players* jump.
+- **Overview.** Three tabs. *Players*: the leaderboard (ranked, with each player's level today and a small line of their season), league averages and a scatter of all players. *League picture*: how the players spread on one metric, how games go (home wins, one-run games, shutouts) and scoring month by month. *Teams*: one card per club with the path of its season, runs scored against runs allowed, and standings with expected wins and luck. Under the leaderboard, *Open one of these players* jumps straight to that player's page.
+- **Player lab.** One player: trend (rolling or season to date), peer percentiles, form over the last ten appearances, hitting and on-base streaks or start quality with game scores, how the outs are made, game log, splits (month, home and away, opponent, wins and losses), comparison, the most similar players, news, full metric sheet and a downloadable report.
+- **Team room.** Record with the one its runs suggest, the path of the season, record by situation (home, away, one-run games, by month), offense by position, who gets the at-bats and the innings, roster, starters vs. relievers, results. The roster has the same *Open one of these players* jump.
 - **Roster scenarios.** Move players between two teams and compare the totals. It replays recorded stats and predicts nothing.
 - **Analyst guide.** A beginner's path into the job: how to read a minor-league player, the level ladder and typical ages, which metrics to learn first, how much data a rate needs before it means anything, mistakes to avoid, the full metric dictionary, data coverage and the rules behind every figure.
 

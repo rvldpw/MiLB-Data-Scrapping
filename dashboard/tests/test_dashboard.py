@@ -3,10 +3,11 @@ from pathlib import Path
 import pandas as pd
 import pytest
 from dashboard.metrics import batting_line, pitching_line, innings_text, percentile_rank, simulate_trade, game_results, player_table, split_table, rolling_rate, team_table, line_for, enriched_line
+from dashboard.metrics import expected_win_pct, record_splits, standings_path, league_by_month, batting_streaks, game_score, start_summary, similar_players, season_path
 from dashboard.data_loader import clean_data
 from dashboard.metric_catalog import RAW_FIELDS
 from dashboard.bio import _level, _state, pool_ids
-from dashboard.context import Context
+from dashboard.context import Context, by_games
 
 def frame(kind, **stats):
  row={c:0 for c in RAW_FIELDS[kind].values()}
@@ -190,3 +191,93 @@ def test_a_player_outside_the_filters_warns_instead_of_crashing():
  app.switch_page('pages/1_Player_Dashboard.py').run()
  assert not app.exception,[e.message for e in app.exception]
  assert any('not in the current filters' in w.value for w in app.warning)
+
+def test_postseason_and_exhibition_games_stay_out_of_season_totals_unless_asked():
+ df=pd.concat([frame('batting',AB=4,H=1)]*5,ignore_index=True)
+ df['game_pk']=[1,2,3,4,5];df['game_type']=['R','W','R','A','E']
+ assert by_games(df,'Regular').game_pk.tolist()==[1,3]
+ assert by_games(df,'Postseason').game_pk.tolist()==[2]
+ assert by_games(df,'Exhibition').game_pk.tolist()==[4,5]
+ assert len(by_games(df,'All'))==5
+ # Files written before the column existed, or with a gap in it, are regular season.
+ assert clean_data(df.drop(columns='game_type'),'batting').game_type.tolist()==['R']*5
+ df.loc[0,'game_type']=None
+ assert by_games(clean_data(df,'batting'),'Regular').game_pk.tolist()==[1,3]
+
+def test_games_control_keeps_postseason_apart_in_the_app(tmp_path,monkeypatch):
+ from streamlit.testing.v1 import AppTest
+ for kind,stats in (('batting',dict(AB=4,H=1,PA=4)),('pitching',dict(outs=9,ER=1,BF=12,GS=1))):
+  df=games(kind,3,**stats).assign(game_pk=[1,2,3],game_type=['R','R','W'],league_name='Test League')
+  folder=tmp_path/'data/season-2021/league-126/team-1';folder.mkdir(parents=True,exist_ok=True)
+  df.to_parquet(folder/f'{kind}.parquet')
+ monkeypatch.setenv('MILB_DATA_DIR',str(tmp_path))
+ root=Path(__file__).resolve().parents[1]
+ app=AppTest.from_file(str(root/'Home.py'),default_timeout=90).run()
+ [s for s in app.sidebar.selectbox if s.label=='Source'][0].set_value('Local dataset').run()
+ assert not app.exception, [x.message for x in app.exception]
+ control=[r for r in app.sidebar.radio if r.label=='Games'][0]
+ ctx=app.session_state['_context']
+ assert control.value=='Regular' and ctx.batting.game_pk.tolist()==[1,2] and 'Postseason' not in ctx.description
+ control.set_value('Postseason').run()
+ assert not app.exception, [x.message for x in app.exception]
+ ctx=app.session_state['_context']
+ assert ctx.batting.game_pk.tolist()==[3] and ctx.pitching.game_pk.tolist()==[3] and ctx.description.endswith('Postseason')
+
+def results(rows):
+ """One club's games: (date, result, runs scored, runs allowed, home)."""
+ df=pd.DataFrame(rows,columns=['game_date','result','team_score','opponent_score','is_home'])
+ df['game_date']=pd.to_datetime(df['game_date']);df['game_pk']=range(1,len(df)+1);df['team_id']=1;df['team_name']='T';df['opponent_name']='O'
+ df['Margin']=df['team_score']-df['opponent_score']
+ return df
+
+def test_record_splits_and_season_path_count_each_game_once():
+ g=results([('2021-04-01','W',5,4,True),('2021-04-02','L',1,7,True),('2021-05-01','W',9,2,False),('2021-05-02','W',3,2,False)])
+ table=record_splits(g).set_index('Split')
+ assert (table.loc['Home','W'],table.loc['Home','L'])==(1,1) and (table.loc['Away','W'],table.loc['Away','L'])==(2,0)
+ assert (table.loc['One-run games','W'],table.loc['One-run games','G'])==(2,2) and table.loc['Decided by 5+','G']==2
+ assert table.index.tolist()[-2:]==['Apr','May'] and table.loc['May','Margin']==8      # months in calendar order
+ assert standings_path(g)['Over'].tolist()==[1,0,1,2]
+ assert record_splits(g.assign(is_home=None)).Split.tolist()[:2]==['One-run games','Decided by 5+']   # no home flag, no home split
+
+def test_expected_wins_follow_runs_and_stay_unknown_without_them():
+ assert expected_win_pct(100.0,100.0)==pytest.approx(.5)
+ assert expected_win_pct(120.0,100.0)>.55 and math.isnan(expected_win_pct(0.0,0.0))
+ assert expected_win_pct(pd.Series([100.0,0.0]),pd.Series([100.0,0.0])).round(2).tolist()[0]==.5
+
+def test_streaks_skip_games_without_an_at_bat_and_need_complete_counts():
+ df=games('batting',6,AB=[4,0,3,4,2,4],PA=[4,1,3,4,3,4],H=[1,0,2,0,0,1],BB=[0,1,0,0,1,0],HBP=0)
+ s=batting_streaks(df)
+ assert (s['hit_best'],s['hit_now'])==(2,1)          # the walk-only game neither extends nor ends the streak
+ assert (s['on_best'],s['on_now'],s['multi_hit'])==(3,2,1) and s['hit_share']==pytest.approx(3/5)
+ df.loc[2,'batting_H']=None
+ assert batting_streaks(df)=={}
+
+def test_game_score_and_quality_starts():
+ df=games('pitching',2,outs=[21,9],SO=[8,2],H=[3,7],ER=[1,5],R=[1,6],BB=[1,3],GS=[1,1])
+ assert game_score(df).tolist()==[50+21+2*3+8-6-4-1, 50+9+0+2-14-20-2-3]
+ summary=start_summary(df)
+ assert (summary['starts'],summary['quality'])==(2,1) and summary['score_best']==74
+ assert start_summary(df.assign(pitching_GS=0))=={}
+
+def test_similar_players_rank_by_closeness_and_leave_the_player_out():
+ pop=pd.DataFrame({'player_id':range(1,9),'Player':list('ABCDEFGH'),'K_pct':[.20,.21,.35,.10,.25,.30,.15,.22],
+                   'BB_pct':[.10,.10,.05,.15,.08,.06,.12,.09],'ISO':[.150,.155,.250,.080,.180,.220,.100,.160],'AVG':[.270,.268,.220,.300,.260,.240,.290,.265]})
+ twins=similar_players(pop,1,'batting',count=3)
+ assert twins.player_id.tolist()[0]==2 and 1 not in twins.player_id.tolist() and len(twins)==3
+ assert twins.Match.iloc[0]>90 and twins.Match.is_monotonic_decreasing
+ assert similar_players(pop.head(4),1,'batting').empty
+
+def test_season_path_waits_for_a_readable_sample_and_keeps_the_latest_game():
+ df=games('batting',30,AB=4,PA=4,H=[1]*29+[4],BB=0,HBP=0,SF=0,TB=[1]*29+[4],IBB=0,SB=0,CS=0,GO=0,AO=0,SO=0,HR=0,R=0,**{'2B':0,'3B':0})
+ path=season_path(df,'batting',points=10).loc[1]
+ assert len(path)<=10 and path[0]==pytest.approx(.5)          # .250 OBP + .250 SLG once 20 plate appearances are in
+ assert path[-1]==pytest.approx(2*(29+4)/120)
+
+def test_league_by_month_pools_counts_and_counts_team_games():
+ bat=games('batting',4,AB=4,PA=4,H=[1,1,2,2],BB=0,HBP=0,SF=0,TB=[1,1,2,2],IBB=0,SB=0,CS=0,GO=0,AO=0,SO=1,HR=[0,0,1,1],R=0,**{'2B':0,'3B':0})
+ bat['game_date']=pd.to_datetime(['2021-04-01','2021-04-02','2021-05-01','2021-05-02']);bat['month']=bat.game_date.dt.strftime('%Y-%m')
+ bat=bat.assign(team_id=1,team_score=[2,4,6,8],opponent_score=1,result='W',opponent_name='O',is_home=True)
+ table=league_by_month(bat,bat.iloc[:0])
+ assert table.Month.tolist()==['Apr','May'] and table.R_G.tolist()==[3,7] and table.HR_G.tolist()==[0,1]
+ assert table.K_pct.tolist()==[.25,.25]
+

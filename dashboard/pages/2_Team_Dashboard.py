@@ -7,8 +7,10 @@ from dashboard import charts, bio, news
 from dashboard.assets import player_photo_url, team_logo_html
 from dashboard.context import context_note
 from dashboard.data_loader import POSITION_ORDER, LEVEL_LABEL
-from dashboard.metrics import line_for, enriched_line, player_table, game_results, split_table
-from dashboard.ui import plain, pretty, jump_to_player, hero, identity, section, stat_cards, league_delta, chart, brief, fmt, download_button, stat_sheet, news_list, ACCENT, BAD, MUTED
+from dashboard.metrics import (line_for, enriched_line, player_table, game_results, split_table, record_splits, standings_path,
+                               expected_win_pct)
+from dashboard.ui import (pretty, jump_to_player, hero, identity, section, stat_cards, league_delta, chart, fmt,
+                          download_button, stat_sheet, news_list, metric_columns, ACCENT, BAD, MUTED)
 
 ctx = st.session_state["_context"]
 hero("Team room", "Record, roster and pitching staff for one club.")
@@ -29,17 +31,32 @@ margin = games["Margin"].sum(min_count=len(games))
 identity(teams[tid], team_logo_html(tid, 84), [
     ("Level", f"{LEVEL_LABEL.get(ctx.level, ctx.level)} · {ctx.league}"), ("Seasons", ctx.period),
     ("Games on file", f"{len(games)}")])
+expected = expected_win_pct(float(games["team_score"].sum()), float(games["opponent_score"].sum())) * (wins + losses)
 stat_cards([
-    {"label": "Record in this view", "value": f"{wins}–{losses}", "sub": f"{ties} ties · not the official season record"},
-    {"label": "Runs scored minus allowed", "value": f"{margin:+.0f}" if pd.notna(margin) else "N/A",
+    {"label": "Record", "value": f"{wins}–{losses}",
+     "sub": (f"{ties} ties · " if ties else "") + ("in this view" if pd.isna(expected) else f"Runs suggest {expected:.0f}–{wins + losses - expected:.0f}")},
+    {"label": "Run difference", "value": f"{margin:+.0f}" if pd.notna(margin) else "N/A",
      "delta": None if pd.isna(margin) else ("outscoring opponents" if margin > 0 else "outscored" if margin < 0 else "level",
                                             "good" if margin > 0 else "bad" if margin < 0 else None)},
-    {"label": "Team hitting (OPS)", "value": fmt(bl['OPS'], 'OPS'), "delta": league_delta(bl.get('OPS'), bc.get('OPS'), 'OPS', 'batting'),
+    {"label": "Team OPS", "value": fmt(bl['OPS'], 'OPS'), "delta": league_delta(bl.get('OPS'), bc.get('OPS'), 'OPS', 'batting'),
      "sub": f"League {fmt(bc['OPS'],'OPS')}"},
-    {"label": "Staff runs per 9 (ERA)", "value": fmt(pl['ERA'], 'ERA'), "delta": league_delta(pl.get('ERA'), pc.get('ERA'), 'ERA', 'pitching'),
+    {"label": "Staff ERA", "value": fmt(pl['ERA'], 'ERA'), "delta": league_delta(pl.get('ERA'), pc.get('ERA'), 'ERA', 'pitching'),
      "sub": f"League {fmt(pc['ERA'],'ERA')}"},
 ])
-tabs = st.tabs(["Team picture", "Roster", "Pitching staff", "Game results", "News", "All team metrics"])
+season_tab, *tabs = st.tabs(["Season", "Lineup", "Roster", "Pitching", "Results", "News", "All metrics"])
+with season_tab:
+    a, b = st.columns([1.35, 1], gap="large")
+    with a:
+        section("Season path", "Wins minus losses after every game.")
+        chart(charts.season_line(standings_path(games)), "team_path")
+    with b:
+        section("Record by situation", "Home and away, close games, month by month.")
+        splits = record_splits(games)
+        shown = pd.DataFrame({"Split": splits["Split"], "Record": splits["W"].astype(str) + "–" + splits["L"].astype(str),
+                              "W_pct": splits["W_pct"].map(lambda v: fmt(v, "W_pct")),
+                              "Margin": splits["Margin"].map(lambda v: "N/A" if pd.isna(v) else f"{v:+.0f}")})
+        st.dataframe(shown, hide_index=True, width="stretch", height=350,
+                     column_config={"W_pct": st.column_config.Column("Win %"), "Margin": st.column_config.Column("Diff", help="Runs scored minus runs allowed")})
 with tabs[0]:
     a, b = st.columns([1.25, 1], gap="large")
     with a:
@@ -72,6 +89,10 @@ with tabs[0]:
         st.dataframe(pd.DataFrame({"Position": positional["Position"], "PA": positional["PA"].map(lambda v: fmt(v, "PA")), "OPS": positional["OPS"].map(lambda v: fmt(v, "OPS")),
                                    "League OPS": positional["League OPS"].map(lambda v: fmt(v, "OPS")),
                                    "Difference": positional["Gap"].map(lambda v: "N/A" if pd.isna(v) else f"{v:+.3f}")}),hide_index=True,width="stretch")
+    hitters = player_table(bteam, "batting")
+    if not hitters.empty:
+        section("Who gets the at-bats", "Bar: plate appearances. Number: OPS. Green is at or above the league.")
+        chart(charts.load_bars(hitters, "PA", "OPS", bc.get("OPS"), "batting"), "team_load_batting")
 
 with tabs[1]:
     section("Roster", "Everyone who played for this club in the selected games. Level now shows where they are today.")
@@ -98,10 +119,11 @@ with tabs[1]:
         for key in shown:
             if key not in ("Player","Position","Role","Photo","player_id","Now","Org"):
                 shown[key]=shown[key].map(lambda v,k=key:fmt(v,k))
-        shown = plain(shown).rename(columns={"Now": "Level now"})
+        shown = shown.rename(columns={"Now": "Level now"})
         st.dataframe(shown, hide_index=True, width="stretch", height=400,
                      column_order=[c for c in shown.columns if c != "player_id"],
-                     column_config={"Photo": st.column_config.ImageColumn("")})
+                     column_config=metric_columns(shown.columns, {"Photo": st.column_config.ImageColumn("", width="small"),
+                                                                  "Org": st.column_config.Column("Org", help="Parent club today")}))
         jump_to_player({int(p): n for p, n in zip(rows["player_id"], rows["Player"])},
                        f"team_jump_{tid}_{kind}", kind, "Open one of these players")
         st.caption("Level now is the level of the player's team today. \"Other league\" is independent, foreign or winter ball. \"No team\" means no club on file. It does not confirm a release or retirement.")
@@ -115,6 +137,8 @@ with tabs[2]:
         roles=split_table(pteam,"pitching","role")
         chart(charts.split_bars(roles,"ERA"),"staff_roles")
         st.dataframe(pretty(roles[["Split","G","GS","IP","ERA","WHIP","K9","BB9","K_BB_pct"]]),hide_index=True,width="stretch")
+        section("Who gets the innings", "Bar: innings. Number: ERA. Green is at or below the league.")
+        chart(charts.load_bars(player_table(pteam, "pitching"), "IP", "ERA", pc.get("ERA"), "pitching"), "team_load_pitching")
 
 with tabs[3]:
     section("Results", "One row per game.")
